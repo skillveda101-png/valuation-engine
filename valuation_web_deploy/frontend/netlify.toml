@@ -1,0 +1,17 @@
+# Deploy only the frontend folder to Netlify
+# In Netlify UI set "Publish directory" to "frontend" (or this folder)
+
+[build]
+  publish = "."
+  # no build command needed – pure static HTML
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"

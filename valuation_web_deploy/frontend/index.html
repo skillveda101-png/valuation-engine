@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Property Valuation Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    label { @apply block text-sm font-medium text-slate-700 mb-1; }
+    input, select, textarea {
+      @apply w-full rounded-lg border border-slate-300 px-3 py-2 text-sm
+             focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white;
+    }
+    .btn-primary {
+      @apply bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2.5 rounded-lg transition
+             disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+    .btn-secondary {
+      @apply bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium px-4 py-2 rounded-lg transition;
+    }
+    .section { @apply bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-5; }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen" class="min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+      <div class="text-center mb-6">
+        <h1 class="text-2xl font-bold text-slate-900">Property Valuation Engine</h1>
+        <p class="text-slate-500 text-sm mt-1">Secure server-side calculation • PDF reports</p>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label>Username</label>
+          <input id="login-user" value="admin" autocomplete="username" />
+        </div>
+        <div>
+          <label>Password</label>
+          <input id="login-pass" type="password" value="admin123" autocomplete="current-password" />
+        </div>
+        <button onclick="doLogin()" class="btn-primary w-full">Sign In</button>
+        <p id="login-error" class="text-red-600 text-sm text-center hidden"></p>
+        <p class="text-xs text-slate-400 text-center">Default: admin / admin123 — change after first login</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="app" class="hidden">
+    <header class="bg-slate-900 text-white py-3 shadow sticky top-0 z-20">
+      <div class="max-w-5xl mx-auto px-4 flex items-center justify-between">
+        <div>
+          <h1 class="text-lg font-bold tracking-tight">Property Valuation Engine</h1>
+          <p class="text-slate-400 text-xs">Formulas stay on the server • Employees cannot take the engine</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <span id="user-badge" class="text-xs bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full"></span>
+          <button onclick="doLogout()" class="text-xs text-slate-400 hover:text-white">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-5xl mx-auto px-4 py-6">
+      <!-- Tabs -->
+      <div class="flex gap-2 mb-5">
+        <button onclick="showTab('form')" id="tab-form" class="btn-primary text-sm">New Valuation</button>
+        <button onclick="showTab('history')" id="tab-history" class="btn-secondary text-sm">History</button>
+      </div>
+
+      <!-- HISTORY -->
+      <div id="history-panel" class="hidden section">
+        <h2 class="text-lg font-semibold mb-3">Recent Valuations</h2>
+        <div id="history-list" class="overflow-x-auto">
+          <p class="text-slate-500 text-sm">Loading…</p>
+        </div>
+      </div>
+
+      <!-- FORM -->
+      <div id="form-panel">
+        <!-- 01 Valuation Details -->
+        <div class="section">
+          <h2 class="text-lg font-semibold text-slate-800 mb-4">01. Valuation Details</h2>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label>Bank Name</label>
+              <select id="bank_name">
+                <option>Nabil Bank Limited</option>
+                <option>Laxmi Sunrise Bank Limited</option>
+                <option>Machhapuchhre Bank Limited</option>
+              </select>
+            </div>
+            <div>
+              <label>Branch</label>
+              <input id="branch" value="Kakarvitta" />
+            </div>
+            <div>
+              <label>Valuation Certificate Date</label>
+              <input type="date" id="valuation_date" />
+            </div>
+            <div>
+              <label>Agreement Date</label>
+              <input type="date" id="agreement_date" />
+            </div>
+            <div>
+              <label>Letter Received Date</label>
+              <input type="date" id="letter_received_date" />
+            </div>
+            <div>
+              <label>Field Visit Date</label>
+              <input type="date" id="field_visit_date" />
+            </div>
+            <div class="md:col-span-2">
+              <label>GPS Coordinates</label>
+              <input id="gps" placeholder="26.719645, 88.167400" />
+            </div>
+            <div>
+              <label>Letter No.</label>
+              <input id="letter_no" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 02 Client -->
+        <div class="section">
+          <h2 class="text-lg font-semibold text-slate-800 mb-4">02. Client & Owner Details</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label>Client Name</label><input id="client_name" placeholder="Mr. / Mrs. ..." /></div>
+            <div><label>Owner Name (same if Self)</label><input id="owner_name" /></div>
+            <div><label>Client Address (Citizenship)</label><input id="client_address" /></div>
+            <div><label>Owner Address (Charkilla)</label><input id="owner_charkilla" /></div>
+            <div><label>Owner Address (Dhanipurja / Title Deed)</label><input id="owner_dhanipurja" /></div>
+            <div>
+              <label>Relationship</label>
+              <select id="relationship">
+                <option>Self</option>
+                <option>Third party</option>
+                <option>Family members</option>
+              </select>
+            </div>
+            <div><label>Citizenship No.</label><input id="citizenship_no" /></div>
+            <div><label>Citizenship Date</label><input id="citizenship_date" placeholder="2044-12-18" /></div>
+            <div><label>Father's Name</label><input id="father_name" /></div>
+            <div><label>Contact No.</label><input id="contact_no" /></div>
+          </div>
+        </div>
+
+        <!-- 03 Plots -->
+        <div class="section">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-slate-800">03. Plot / Land Details</h2>
+            <button type="button" onclick="addPlot()" class="btn-secondary text-sm">+ Add Plot</button>
+          </div>
+          <div id="plots-container"></div>
+        </div>
+
+        <!-- 04 Building -->
+        <div class="section">
+          <div class="flex items-center gap-3 mb-4">
+            <input type="checkbox" id="has_building" class="w-4 h-4" onchange="toggleBuilding()" />
+            <h2 class="text-lg font-semibold text-slate-800">04. Existing Building (optional)</h2>
+          </div>
+          <div id="building-fields" class="hidden grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div><label>Storeys</label><input type="number" id="storeys" value="0" /></div>
+            <div><label>Built-up Area (sq.m)</label><input type="number" id="built_up" step="0.01" value="0" /></div>
+            <div><label>Year of Completion (BS)</label><input id="year_completion" placeholder="2075" /></div>
+            <div>
+              <label>Construction Type</label>
+              <select id="construction_type">
+                <option>RCC</option>
+                <option>Load Bearing</option>
+                <option>Steel</option>
+              </select>
+            </div>
+            <div><label>Cost per sq.m (Rs)</label><input type="number" id="cost_per_sqm" value="25000" /></div>
+            <div><label>Depreciation %</label><input type="number" id="depreciation" value="0" step="0.1" /></div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex flex-wrap gap-3 sticky bottom-4 bg-white/95 backdrop-blur p-4 rounded-xl shadow-lg border border-slate-200 z-10">
+          <button onclick="preview()" class="btn-secondary">Preview Calculation</button>
+          <button onclick="downloadPdf()" class="btn-primary">Generate & Download PDF</button>
+          <span id="status" class="text-sm text-slate-500 self-center ml-2"></span>
+        </div>
+
+        <div id="preview-box" class="section mt-6 hidden">
+          <h2 class="text-lg font-semibold mb-3">Calculation Preview</h2>
+          <pre id="preview-json" class="text-xs bg-slate-900 text-green-400 p-4 rounded-lg overflow-auto max-h-80"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    // ========== CONFIG ==========
+    // Local: leave empty in config.js
+    // After deploying backend on Render, edit config.js:
+    //   window.VALUATION_API_URL = "https://your-app.onrender.com";
+    const API = (window.VALUATION_API_URL || "").replace(/\/$/, "");
+    // ==========================
+    let token = localStorage.getItem("val_token") || "";
+    let plotCount = 0;
+
+    // ---------- Auth ----------
+    async function doLogin() {
+      const username = document.getElementById("login-user").value.trim();
+      const password = document.getElementById("login-pass").value;
+      const err = document.getElementById("login-error");
+      err.classList.add("hidden");
+      try {
+        const res = await fetch(API + "/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          throw new Error(d.detail || "Login failed");
+        }
+        const data = await res.json();
+        token = data.access_token;
+        localStorage.setItem("val_token", token);
+        localStorage.setItem("val_user", data.full_name || data.username);
+        showApp();
+      } catch (e) {
+        err.textContent = e.message;
+        err.classList.remove("hidden");
+      }
+    }
+
+    function doLogout() {
+      token = "";
+      localStorage.removeItem("val_token");
+      localStorage.removeItem("val_user");
+      document.getElementById("login-screen").classList.remove("hidden");
+      document.getElementById("app").classList.add("hidden");
+    }
+
+    function showApp() {
+      document.getElementById("login-screen").classList.add("hidden");
+      document.getElementById("app").classList.remove("hidden");
+      document.getElementById("user-badge").textContent = localStorage.getItem("val_user") || "User";
+    }
+
+    function authHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+      };
+    }
+
+    // auto-login if token exists
+    if (token) {
+      fetch(API + "/api/me", { headers: authHeaders() })
+        .then(r => { if (r.ok) showApp(); else doLogout(); })
+        .catch(() => doLogout());
+    }
+
+    // Enter key on login
+    document.getElementById("login-pass").addEventListener("keydown", e => {
+      if (e.key === "Enter") doLogin();
+    });
+
+    // ---------- Tabs ----------
+    function showTab(name) {
+      document.getElementById("form-panel").classList.toggle("hidden", name !== "form");
+      document.getElementById("history-panel").classList.toggle("hidden", name !== "history");
+      document.getElementById("tab-form").className = name === "form" ? "btn-primary text-sm" : "btn-secondary text-sm";
+      document.getElementById("tab-history").className = name === "history" ? "btn-primary text-sm" : "btn-secondary text-sm";
+      if (name === "history") loadHistory();
+    }
+
+    async function loadHistory() {
+      const box = document.getElementById("history-list");
+      box.innerHTML = "<p class='text-slate-500 text-sm'>Loading…</p>";
+      try {
+        const res = await fetch(API + "/api/history", { headers: authHeaders() });
+        if (!res.ok) throw new Error("Failed");
+        const rows = await res.json();
+        if (!rows.length) {
+          box.innerHTML = "<p class='text-slate-500 text-sm'>No valuations yet.</p>";
+          return;
+        }
+        let html = `<table class="w-full text-sm"><thead><tr class="bg-slate-100 text-left">
+          <th class="p-2">#</th><th class="p-2">Date</th><th class="p-2">Client</th>
+          <th class="p-2">Bank</th><th class="p-2 text-right">FMV</th><th class="p-2 text-right">DV</th>
+          <th class="p-2">By</th></tr></thead><tbody>`;
+        rows.forEach(r => {
+          html += `<tr class="border-t border-slate-100 hover:bg-slate-50">
+            <td class="p-2">${r.id}</td>
+            <td class="p-2">${r.valuation_date}</td>
+            <td class="p-2">${r.client_name}</td>
+            <td class="p-2">${r.bank_name}<br><span class="text-xs text-slate-400">${r.branch}</span></td>
+            <td class="p-2 text-right font-medium">${Number(r.total_fmv).toLocaleString()}</td>
+            <td class="p-2 text-right">${Number(r.total_distress).toLocaleString()}</td>
+            <td class="p-2 text-xs text-slate-500">${r.created_by}</td>
+          </tr>`;
+        });
+        html += "</tbody></table>";
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = `<p class="text-red-500 text-sm">${e.message}</p>`;
+      }
+    }
+
+    // ---------- Plots ----------
+    function plotHtml(i) {
+      return `
+      <div class="border border-slate-200 rounded-lg p-4 mb-4 bg-slate-50" id="plot-${i}">
+        <div class="flex justify-between items-center mb-3">
+          <h3 class="font-medium text-slate-700">Plot #${i + 1}</h3>
+          ${i > 0 ? `<button type="button" onclick="document.getElementById('plot-${i}').remove()" class="text-red-500 text-sm">Remove</button>` : ""}
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div><label>Plot No.</label><input class="plot-no" /></div>
+          <div><label>Lalpurja Area (sq.m)</label><input type="number" class="lalpurja" step="0.01" value="0" /></div>
+          <div><label>Cadastral Map (sq.m)</label><input type="number" class="cadastral" step="0.01" value="0" /></div>
+          <div><label>Site Measurement (sq.m)</label><input type="number" class="site" step="0.01" value="0" /></div>
+          <div><label>Deducted ROW (sq.m)</label><input type="number" class="deducted" step="0.01" value="0" /></div>
+          <div><label>Belt-1 Area (sq.m)</label><input type="number" class="belt1" step="0.01" value="0" /></div>
+          <div><label>Belt-2 Area (sq.m)</label><input type="number" class="belt2" step="0.01" value="0" /></div>
+          <div><label>Belt-3 Area (sq.m)</label><input type="number" class="belt3" step="0.01" value="0" /></div>
+          <div><label>Govt Rate</label><input type="number" class="govt_rate" value="0" /></div>
+          <div>
+            <label>Govt Rate Unit</label>
+            <select class="govt_unit"><option>Kattha</option><option>Sq.M.</option><option>dhur</option></select>
+          </div>
+          <div><label>Market Rate</label><input type="number" class="market_rate" value="0" /></div>
+          <div>
+            <label>Market Rate Unit</label>
+            <select class="market_unit"><option>Kattha</option><option>Sq.M.</option><option>dhur</option></select>
+          </div>
+          <div class="md:col-span-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div><label>East</label><input class="east" /></div>
+            <div><label>West</label><input class="west" /></div>
+            <div><label>North</label><input class="north" /></div>
+            <div><label>South</label><input class="south" /></div>
+          </div>
+          <div class="md:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div><label>Road Width</label><input class="road_width" placeholder="20 Ft Gravel Road on ..." /></div>
+            <div><label>Road Type</label><input class="road_type" value="Gravel Road" /></div>
+            <div><label>Frontage</label><input class="frontage" /></div>
+            <div><label>Distance to Market</label><input class="distance" /></div>
+          </div>
+          <div>
+            <label>Title Deed Type</label>
+            <select class="title_deed">
+              <option>Normal Sale</option><option>Bakaspatra</option>
+              <option>Ansabanda</option><option>Halsabik</option>
+            </select>
+          </div>
+          <div>
+            <label>Ownership</label>
+            <select class="ownership"><option>Single</option><option>Joint</option></select>
+          </div>
+          <div><label>Registration Date</label><input class="reg_date" placeholder="2083-05-11" /></div>
+          <div><label>Original Charkilla</label><input class="charkilla_date" placeholder="obtained dated 09-06-2083" /></div>
+        </div>
+      </div>`;
+    }
+
+    function addPlot() {
+      document.getElementById("plots-container").insertAdjacentHTML("beforeend", plotHtml(plotCount++));
+    }
+
+    function toggleBuilding() {
+      document.getElementById("building-fields").classList.toggle(
+        "hidden", !document.getElementById("has_building").checked
+      );
+    }
+
+    // defaults
+    const today = new Date().toISOString().slice(0, 10);
+    ["valuation_date", "letter_received_date", "field_visit_date"].forEach(id => {
+      document.getElementById(id).value = today;
+    });
+    document.getElementById("agreement_date").value = "2023-11-26";
+    addPlot();
+
+    // ---------- Collect ----------
+    function collectData() {
+      const plots = [];
+      document.querySelectorAll("[id^=plot-]").forEach(el => {
+        plots.push({
+          plot_no: el.querySelector(".plot-no").value || "0",
+          lalpurja_sqm: +el.querySelector(".lalpurja").value || 0,
+          cadastral_sqm: +el.querySelector(".cadastral").value || 0,
+          site_measurement_sqm: +el.querySelector(".site").value || 0,
+          deducted_row_sqm: +el.querySelector(".deducted").value || 0,
+          belt1_sqm: +el.querySelector(".belt1").value || 0,
+          belt2_sqm: +el.querySelector(".belt2").value || 0,
+          belt3_sqm: +el.querySelector(".belt3").value || 0,
+          govt_rate: +el.querySelector(".govt_rate").value || 0,
+          govt_rate_unit: el.querySelector(".govt_unit").value,
+          market_rate: +el.querySelector(".market_rate").value || 0,
+          market_rate_unit: el.querySelector(".market_unit").value,
+          east: el.querySelector(".east").value,
+          west: el.querySelector(".west").value,
+          north: el.querySelector(".north").value,
+          south: el.querySelector(".south").value,
+          road_width: el.querySelector(".road_width").value,
+          road_type: el.querySelector(".road_type").value,
+          frontage: el.querySelector(".frontage").value,
+          distance_to_market: el.querySelector(".distance").value,
+          title_deed_type: el.querySelector(".title_deed").value,
+          ownership_type: el.querySelector(".ownership").value,
+          reg_date: el.querySelector(".reg_date").value,
+          original_charkilla: el.querySelector(".charkilla_date").value,
+          importance: "Residential",
+          shape: "Regular (Refer the location & site plan)",
+          land_type: "Freehold",
+          cooling_off: "Elapsed",
+          motorable: "Yes",
+          road_expansion: "No",
+          road_access_charkilla: "Yes",
+          guthi: "No",
+          high_tension: "NOT PASSING",
+          near_river: "No",
+          near_border: "No",
+          irregular_shape: "No",
+          high_inclination: "No",
+          sukumbasi: "No",
+          joint_owners: "No",
+        });
+      });
+
+      const hasBldg = document.getElementById("has_building").checked;
+      const clientName = document.getElementById("client_name").value;
+      const ownerName = document.getElementById("owner_name").value || clientName;
+
+      return {
+        bank_name: document.getElementById("bank_name").value,
+        branch: document.getElementById("branch").value,
+        valuation_date: document.getElementById("valuation_date").value,
+        agreement_date: document.getElementById("agreement_date").value,
+        letter_no: document.getElementById("letter_no").value,
+        letter_received_date: document.getElementById("letter_received_date").value,
+        field_visit_date: document.getElementById("field_visit_date").value,
+        gps: document.getElementById("gps").value,
+        client: {
+          client_name: clientName,
+          client_address_citizenship: document.getElementById("client_address").value,
+          citizenship_no: document.getElementById("citizenship_no").value,
+          citizenship_date: document.getElementById("citizenship_date").value,
+          father_name: document.getElementById("father_name").value,
+          contact_no: document.getElementById("contact_no").value,
+          owner_name: ownerName,
+          owner_address_citizenship: document.getElementById("client_address").value,
+          owner_address_charkilla: document.getElementById("owner_charkilla").value,
+          owner_address_dhanipurja: document.getElementById("owner_dhanipurja").value,
+          owner_citizenship_no: document.getElementById("citizenship_no").value,
+          owner_citizenship_date: document.getElementById("citizenship_date").value,
+          owner_father: document.getElementById("father_name").value,
+          owner_contact: document.getElementById("contact_no").value,
+          relationship: document.getElementById("relationship").value,
+          is_company: false,
+        },
+        plots,
+        building: hasBldg ? {
+          has_building: true,
+          storeys: +document.getElementById("storeys").value || 0,
+          built_up_area_sqm: +document.getElementById("built_up").value || 0,
+          year_of_completion_bs: document.getElementById("year_completion").value,
+          construction_type: document.getElementById("construction_type").value,
+          construction_cost_per_sqm: +document.getElementById("cost_per_sqm").value || 25000,
+          depreciation_pct: +document.getElementById("depreciation").value || 0,
+          building_type: "Residential",
+          naksa_pass: "Yes",
+          completion_certificate: "Yes",
+          constructed_as_per_drawing: "Yes",
+          anticipated_life_years: 40,
+          pillar_size: "300 MM X 300 MM",
+        } : { has_building: false },
+        valuator_name: "Authorized Engineer",
+        firm_name: "D Solution",
+        firm_address: "MECHINAGAR MUNICIPALITY - 7, ITABHATTA, JHAPA",
+        firm_reg_no: "238082/077/078",
+        firm_pan: "609759503",
+        firm_email: "d.solution100@gmail.com",
+        firm_phone: "9816969180",
+      };
+    }
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = "text-sm self-center ml-2 " + (isError ? "text-red-600" : "text-slate-500");
+    }
+
+    async function preview() {
+      setStatus("Calculating…");
+      try {
+        const res = await fetch(API + "/api/calculate", {
+          method: "POST", headers: authHeaders(), body: JSON.stringify(collectData()),
+        });
+        if (res.status === 401) { doLogout(); return; }
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || res.statusText); }
+        const result = await res.json();
+        document.getElementById("preview-box").classList.remove("hidden");
+        document.getElementById("preview-json").textContent = JSON.stringify({
+          summary: result.summary,
+          plots: result.plots.map(p => ({
+            plot_no: p.plot_no,
+            considered: p.considered_sqm,
+            belts_net: [p.belt1_net, p.belt2_net, p.belt3_net],
+            rates: [p.rate1, p.rate2, p.rate3],
+            fmv: p.fmv,
+            distress: p.distress,
+          })),
+        }, null, 2);
+        setStatus(`FMV: NRs. ${result.summary.total_fmv.toLocaleString()}  |  DV: NRs. ${result.summary.total_distress.toLocaleString()}`);
+      } catch (e) {
+        setStatus(e.message, true);
+      }
+    }
+
+    async function downloadPdf() {
+      setStatus("Generating PDF…");
+      try {
+        const data = collectData();
+        const res = await fetch(API + "/api/generate-pdf", {
+          method: "POST", headers: authHeaders(), body: JSON.stringify(data),
+        });
+        if (res.status === 401) { doLogout(); return; }
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || res.statusText); }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `Valuation_${(data.client.client_name || "report").replace(/\\s+/g, "_")}_${data.valuation_date}.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus("PDF downloaded & saved to history");
+      } catch (e) {
+        setStatus(e.message, true);
+      }
+    }
+  </script>
+</body>
+</html>
