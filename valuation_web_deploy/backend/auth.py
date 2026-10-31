@@ -33,7 +33,6 @@ def get_db():
 
 
 def init_db():
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -58,6 +57,44 @@ def init_db():
             total_distress INTEGER,
             request_json TEXT,
             result_json TEXT,
+            created_at TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS site_visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_uid TEXT UNIQUE NOT NULL,
+            created_by TEXT,
+            client_name TEXT NOT NULL,
+            plot_no TEXT NOT NULL,
+            bank_name TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            gps_lat REAL,
+            gps_lng REAL,
+            gps_accuracy REAL,
+            gps_text TEXT,
+            notes TEXT,
+            photo_paths TEXT,
+            visited_at TEXT,
+            synced_at TEXT,
+            used_in_report_id TEXT,
+            created_at TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pdf_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id TEXT UNIQUE,
+            created_by TEXT,
+            client_name TEXT,
+            plot_nos TEXT,
+            bank_name TEXT,
+            branch TEXT,
+            total_fmv REAL,
+            total_distress REAL,
+            valuation_date TEXT,
+            pdf_path TEXT,
+            site_visit_ids TEXT,
             created_at TEXT
         )
     """)
@@ -239,3 +276,207 @@ def get_report_record(report_id: str):
     if not row:
         return None
     return dict(row)
+
+
+# ---------- Site visits & PDF records ----------
+
+PHOTOS_DIR = os.path.join(os.path.dirname(__file__), "data", "photos")
+PDFS_DIR = os.path.join(os.path.dirname(__file__), "data", "pdfs")
+
+
+def ensure_storage_dirs():
+    os.makedirs(PHOTOS_DIR, exist_ok=True)
+    os.makedirs(PDFS_DIR, exist_ok=True)
+
+
+def save_site_visit(
+    visit_uid: str,
+    username: str,
+    client_name: str,
+    plot_no: str,
+    bank_name: str,
+    branch: str,
+    gps_lat: Optional[float],
+    gps_lng: Optional[float],
+    gps_accuracy: Optional[float],
+    gps_text: str,
+    notes: str,
+    photo_paths: list,
+    visited_at: str,
+) -> dict:
+    import json
+    ensure_storage_dirs()
+    conn = get_db()
+    now = datetime.utcnow().isoformat() + "Z"
+    conn.execute(
+        """INSERT OR REPLACE INTO site_visits
+           (visit_uid, created_by, client_name, plot_no, bank_name, branch,
+            gps_lat, gps_lng, gps_accuracy, gps_text, notes, photo_paths,
+            visited_at, synced_at, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            visit_uid,
+            username,
+            client_name.strip(),
+            plot_no.strip(),
+            bank_name.strip(),
+            branch.strip(),
+            gps_lat,
+            gps_lng,
+            gps_accuracy,
+            gps_text or "",
+            notes or "",
+            json.dumps(photo_paths),
+            visited_at or now,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM site_visits WHERE visit_uid = ?", (visit_uid,)).fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def list_site_visits(limit: int = 100, plot_no: str = None, client_name: str = None):
+    import json
+    conn = get_db()
+    q = "SELECT * FROM site_visits WHERE 1=1"
+    params = []
+    if plot_no:
+        q += " AND plot_no LIKE ?"
+        params.append(f"%{plot_no}%")
+    if client_name:
+        q += " AND client_name LIKE ?"
+        params.append(f"%{client_name}%")
+    q += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    for r in rows:
+        try:
+            r["photo_paths"] = json.loads(r.get("photo_paths") or "[]")
+        except Exception:
+            r["photo_paths"] = []
+    return rows
+
+
+def get_site_visit(visit_uid: str):
+    import json
+    conn = get_db()
+    row = conn.execute("SELECT * FROM site_visits WHERE visit_uid = ?", (visit_uid,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["photo_paths"] = json.loads(d.get("photo_paths") or "[]")
+    except Exception:
+        d["photo_paths"] = []
+    return d
+
+
+def find_site_visits_for_plots(plot_nos: list, client_name: str = None):
+    """Return latest site visit per plot_no (optional client filter)."""
+    import json
+    if not plot_nos:
+        return []
+    conn = get_db()
+    results = []
+    for pn in plot_nos:
+        q = "SELECT * FROM site_visits WHERE plot_no = ?"
+        params = [pn]
+        if client_name:
+            q += " AND client_name LIKE ?"
+            params.append(f"%{client_name}%")
+        q += " ORDER BY id DESC LIMIT 1"
+        row = conn.execute(q, params).fetchone()
+        if row:
+            d = dict(row)
+            try:
+                d["photo_paths"] = json.loads(d.get("photo_paths") or "[]")
+            except Exception:
+                d["photo_paths"] = []
+            results.append(d)
+    conn.close()
+    return results
+
+
+def mark_site_visit_used(visit_uid: str, report_id: str):
+    conn = get_db()
+    conn.execute(
+        "UPDATE site_visits SET used_in_report_id = ? WHERE visit_uid = ?",
+        (report_id, visit_uid),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_pdf_record(
+    report_id: str,
+    username: str,
+    client_name: str,
+    plot_nos: str,
+    bank_name: str,
+    branch: str,
+    total_fmv: float,
+    total_distress: float,
+    valuation_date: str,
+    pdf_path: str,
+    site_visit_ids: list,
+):
+    import json
+    ensure_storage_dirs()
+    conn = get_db()
+    conn.execute(
+        """INSERT OR REPLACE INTO pdf_records
+           (report_id, created_by, client_name, plot_nos, bank_name, branch,
+            total_fmv, total_distress, valuation_date, pdf_path, site_visit_ids, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            report_id,
+            username,
+            client_name,
+            plot_nos,
+            bank_name,
+            branch,
+            total_fmv,
+            total_distress,
+            valuation_date,
+            pdf_path,
+            json.dumps(site_visit_ids or []),
+            datetime.utcnow().isoformat() + "Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_pdf_records(limit: int = 100):
+    import json
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM pdf_records ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()]
+    conn.close()
+    for r in rows:
+        try:
+            r["site_visit_ids"] = json.loads(r.get("site_visit_ids") or "[]")
+        except Exception:
+            r["site_visit_ids"] = []
+    return rows
+
+
+def get_pdf_record(report_id: str):
+    import json
+    conn = get_db()
+    row = conn.execute("SELECT * FROM pdf_records WHERE report_id = ?", (report_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["site_visit_ids"] = json.loads(d.get("site_visit_ids") or "[]")
+    except Exception:
+        d["site_visit_ids"] = []
+    return d

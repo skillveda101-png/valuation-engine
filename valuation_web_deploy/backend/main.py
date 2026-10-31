@@ -1,13 +1,18 @@
 """
-Property Valuation Web Engine – API + report verification
+Property Valuation Web Engine – API + field app + report verification
 """
 
 import os
 import hashlib
 import uuid
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+import base64
+import json
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from calculations import ValuationRequest, run_valuation, BANK_PRESETS
 from pdf_generator import generate_valuation_pdf
@@ -16,9 +21,13 @@ from auth import (
     get_current_user, save_valuation, list_valuations,
     LoginRequest, Token,
     save_report_record, get_report_record, ensure_reports_table,
+    save_site_visit, list_site_visits, get_site_visit,
+    find_site_visits_for_plots, mark_site_visit_used,
+    save_pdf_record, list_pdf_records, get_pdf_record,
+    ensure_storage_dirs, PHOTOS_DIR, PDFS_DIR,
 )
 
-app = FastAPI(title="Property Valuation Engine", version="3.1.0")
+app = FastAPI(title="Property Valuation Engine", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,7 +38,6 @@ app.add_middleware(
 )
 
 FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
-# Public base URL for verification QR (override with env on Render)
 PUBLIC_BASE = os.environ.get("PUBLIC_API_URL", "https://valuation-engine-m013.onrender.com").rstrip("/")
 
 
@@ -37,6 +45,7 @@ PUBLIC_BASE = os.environ.get("PUBLIC_API_URL", "https://valuation-engine-m013.on
 def startup():
     init_db()
     ensure_reports_table()
+    ensure_storage_dirs()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -48,9 +57,35 @@ async def home():
     return HTMLResponse("<h1>Valuation API</h1>")
 
 
+@app.get("/field", response_class=HTMLResponse)
+async def field_app():
+    """Mobile field-visit app (installable PWA)."""
+    path = os.path.join(FRONTEND, "field.html")
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse("<h1>Field app not found</h1>", status_code=404)
+
+
+@app.get("/manifest.json")
+async def manifest():
+    path = os.path.join(FRONTEND, "manifest.json")
+    if os.path.isfile(path):
+        return FileResponse(path, media_type="application/manifest+json")
+    raise HTTPException(404)
+
+
+@app.get("/sw.js")
+async def service_worker():
+    path = os.path.join(FRONTEND, "sw.js")
+    if os.path.isfile(path):
+        return FileResponse(path, media_type="application/javascript")
+    raise HTTPException(404)
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.1.0"}
+    return {"status": "ok", "version": "4.0.0"}
 
 
 @app.post("/api/login", response_model=Token)
@@ -97,8 +132,14 @@ def _report_hash(req: dict, summary: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+class PdfRequest(ValuationRequest):
+    """ValuationRequest + optional site photo paths / visit ids."""
+    site_photo_paths: Optional[List[str]] = None
+    site_visit_uids: Optional[List[str]] = None
+
+
 @app.post("/api/pdf")
-async def pdf(req: ValuationRequest, user=Depends(get_current_user)):
+async def pdf(req: PdfRequest, user=Depends(get_current_user)):
     try:
         result = run_valuation(req)
         report_id = uuid.uuid4().hex[:12].upper()
@@ -109,11 +150,60 @@ async def pdf(req: ValuationRequest, user=Depends(get_current_user)):
         result["content_hash"] = content_hash
         result["verify_url"] = verify_url
 
+        # Resolve photos from site visits if not explicitly provided
+        photo_paths = list(req.site_photo_paths or [])
+        visit_uids = list(req.site_visit_uids or [])
+        plot_nos = [p.plot_no for p in req.plots if p.plot_no]
+        visits = find_site_visits_for_plots(
+            plot_nos, req.client.client_name if req.client else None
+        )
+        if not photo_paths:
+            for v in visits:
+                photo_paths.extend(v.get("photo_paths") or [])
+                if v.get("visit_uid") and v["visit_uid"] not in visit_uids:
+                    visit_uids.append(v["visit_uid"])
+        result["site_photo_paths"] = photo_paths
+        # Ensure request dict has gps if visits have it
+        req_dict = req.model_dump()
+        if not req_dict.get("gps") and visits:
+            for v in visits:
+                if v.get("gps_text"):
+                    req_dict["gps"] = v["gps_text"]
+                    break
+                if v.get("gps_lat") is not None and v.get("gps_lng") is not None:
+                    req_dict["gps"] = f"{v['gps_lat']:.6f}, {v['gps_lng']:.6f}"
+                    break
+        result["request"] = req_dict
+
         pdf_bytes = generate_valuation_pdf(result)
 
+        # Persist PDF to disk for record keeping
+        ensure_storage_dirs()
+        pdf_filename = f"valuation_{report_id}.pdf"
+        pdf_path = os.path.join(PDFS_DIR, pdf_filename)
         try:
-            save_report_record(report_id, user["username"], req.model_dump(), result["summary"], content_hash)
-            save_valuation(user["username"], req.model_dump(), result["summary"])
+            with open(pdf_path, "wb") as f:
+                f.write(pdf_bytes)
+        except Exception:
+            pdf_path = ""
+
+        try:
+            save_report_record(report_id, user["username"], req_dict, result["summary"], content_hash)
+            save_valuation(user["username"], req_dict, result["summary"])
+            client_name = (req.client.client_name if req.client else "") or ""
+            plot_nos_str = ", ".join(p.plot_no for p in req.plots)
+            save_pdf_record(
+                report_id, user["username"], client_name, plot_nos_str,
+                req.bank_name, req.branch,
+                result["summary"].get("total_fmv", 0),
+                result["summary"].get("total_distress", 0),
+                req.valuation_date, pdf_path, visit_uids,
+            )
+            for uid in visit_uids:
+                try:
+                    mark_site_visit_used(uid, report_id)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -131,7 +221,127 @@ async def pdf(req: ValuationRequest, user=Depends(get_current_user)):
 
 @app.get("/api/history")
 async def history(user=Depends(get_current_user)):
-    return list_valuations(user["username"])
+    return list_valuations(50)
+
+
+# ---------- Site visits (field app) ----------
+
+class SiteVisitPayload(BaseModel):
+    visit_uid: str
+    client_name: str
+    plot_no: str
+    bank_name: str
+    branch: str
+    gps_lat: Optional[float] = None
+    gps_lng: Optional[float] = None
+    gps_accuracy: Optional[float] = None
+    gps_text: str = ""
+    notes: str = ""
+    visited_at: str = ""
+    # photos as base64 list: data:image/jpeg;base64,... or raw base64
+    photos_b64: Optional[List[str]] = None
+
+
+@app.post("/api/site-visits")
+async def create_site_visit(body: SiteVisitPayload, user=Depends(get_current_user)):
+    if not body.client_name or not body.plot_no or not body.bank_name or not body.branch:
+        raise HTTPException(400, "client_name, plot_no, bank_name, branch are required")
+    if not body.photos_b64 or len(body.photos_b64) == 0:
+        raise HTTPException(400, "At least one photo is required")
+
+    ensure_storage_dirs()
+    photo_paths = []
+    for i, b64 in enumerate(body.photos_b64[:8]):  # max 8 photos
+        try:
+            if "," in b64:
+                b64 = b64.split(",", 1)[1]
+            raw = base64.b64decode(b64)
+            fname = f"{body.visit_uid}_{i}.jpg"
+            fpath = os.path.join(PHOTOS_DIR, fname)
+            with open(fpath, "wb") as f:
+                f.write(raw)
+            photo_paths.append(fname)
+        except Exception as e:
+            raise HTTPException(400, f"Invalid photo data: {e}")
+
+    gps_text = body.gps_text
+    if not gps_text and body.gps_lat is not None and body.gps_lng is not None:
+        gps_text = f"{body.gps_lat:.6f}, {body.gps_lng:.6f}"
+
+    rec = save_site_visit(
+        visit_uid=body.visit_uid or uuid.uuid4().hex,
+        username=user["username"],
+        client_name=body.client_name,
+        plot_no=body.plot_no,
+        bank_name=body.bank_name,
+        branch=body.branch,
+        gps_lat=body.gps_lat,
+        gps_lng=body.gps_lng,
+        gps_accuracy=body.gps_accuracy,
+        gps_text=gps_text,
+        notes=body.notes or "",
+        photo_paths=photo_paths,
+        visited_at=body.visited_at or "",
+    )
+    return {"ok": True, "visit": rec}
+
+
+@app.get("/api/site-visits")
+async def api_list_site_visits(
+    plot_no: Optional[str] = None,
+    client_name: Optional[str] = None,
+    limit: int = Query(50, le=200),
+    user=Depends(get_current_user),
+):
+    return list_site_visits(limit=limit, plot_no=plot_no, client_name=client_name)
+
+
+@app.get("/api/site-visits/{visit_uid}")
+async def api_get_site_visit(visit_uid: str, user=Depends(get_current_user)):
+    rec = get_site_visit(visit_uid)
+    if not rec:
+        raise HTTPException(404, "Site visit not found")
+    return rec
+
+
+@app.get("/api/site-visits/for-plots")
+async def api_site_visits_for_plots(
+    plot_nos: str = Query(..., description="Comma-separated plot numbers"),
+    client_name: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    nos = [p.strip() for p in plot_nos.split(",") if p.strip()]
+    return find_site_visits_for_plots(nos, client_name)
+
+
+@app.get("/api/photos/{filename}")
+async def get_photo(filename: str):
+    """Serve stored site photos (auth not required for PDF embedding convenience; filenames are UUIDs)."""
+    # Prevent path traversal
+    safe = os.path.basename(filename)
+    path = os.path.join(PHOTOS_DIR, safe)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Photo not found")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+# ---------- PDF / report records ----------
+
+@app.get("/api/pdf-records")
+async def api_list_pdf_records(user=Depends(get_current_user)):
+    return list_pdf_records(100)
+
+
+@app.get("/api/pdf-records/{report_id}/download")
+async def download_stored_pdf(report_id: str, user=Depends(get_current_user)):
+    rec = get_pdf_record(report_id)
+    if not rec or not rec.get("pdf_path") or not os.path.isfile(rec["pdf_path"]):
+        raise HTTPException(404, "Stored PDF not found")
+    return FileResponse(
+        rec["pdf_path"],
+        media_type="application/pdf",
+        filename=f"valuation_{report_id}.pdf",
+    )
 
 
 @app.get("/api/verify/{report_id}")

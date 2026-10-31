@@ -97,6 +97,39 @@ def make_logo_flowable(size_mm=22):
     return CompanySeal(size=int(size_mm * 2.5))
 
 
+def _photo_paths_from_data(data: Dict[str, Any]) -> List[str]:
+    """Resolve absolute paths for site photos stored under backend/data/photos/."""
+    names = data.get("site_photo_paths") or []
+    photos_dir = os.path.join(os.path.dirname(__file__), "data", "photos")
+    paths = []
+    for n in names:
+        if not n:
+            continue
+        p = n if os.path.isabs(n) else os.path.join(photos_dir, os.path.basename(n))
+        if os.path.isfile(p):
+            paths.append(p)
+    return paths
+
+
+def _make_photo_flowables(paths: List[str], max_w_mm=85, max_h_mm=65) -> List:
+    """Create Image flowables for up to 6 photos, 2 per row."""
+    out = []
+    for p in paths[:6]:
+        try:
+            img = Image(p)
+            # scale to fit
+            iw, ih = img.imageWidth, img.imageHeight
+            if iw <= 0 or ih <= 0:
+                continue
+            scale = min((max_w_mm * mm) / iw, (max_h_mm * mm) / ih, 1.0)
+            img.drawWidth = iw * scale
+            img.drawHeight = ih * scale
+            out.append(img)
+        except Exception:
+            continue
+    return out
+
+
 def make_qr_flowable(url: str, size_mm=28):
     """QR code linking to public verification URL."""
     if not url:
@@ -397,7 +430,25 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     story.append(kv(gps_rows))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Site Photograph</b>", st["SectionTitle"]))
-    story.append(Paragraph("(Attach site photographs here / Annex 3)", st["Words"]))
+    cover_photos = _photo_paths_from_data(data)
+    if cover_photos:
+        imgs = _make_photo_flowables(cover_photos[:2], max_w_mm=80, max_h_mm=55)
+        if imgs:
+            # one or two photos side by side
+            if len(imgs) == 1:
+                story.append(imgs[0])
+            else:
+                tph = Table([[imgs[0], imgs[1]]], colWidths=[90*mm, 90*mm])
+                tph.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ]))
+                story.append(tph)
+        story.append(Paragraph("<i>See Annex 3 for additional photographs</i>", st["Words"]))
+    else:
+        story.append(Paragraph("<i>Site photographs are included in Annex 3 when available.</i>", st["Words"]))
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>SUBMITTED TO:</b>", st["SectionTitle"]))
     story.append(Paragraph(f"<b>{req['bank_name']}</b>", st["CenterVal"]))
@@ -924,13 +975,50 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     story.append(t)
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Annex 2 — DRAWINGS of Land & Site plan Map</b>", st["H2"]))
-    story.append(Paragraph("(Attach cadastral / site plan drawings here)", st["Words"]))
+    story.append(Paragraph(
+        "Cadastral / site plan drawings as provided by the client are kept in the office file and form part of this report.",
+        st["Words"],
+    ))
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Annex 3 — PHOTOGRAPHS</b>", st["H2"]))
-    story.append(Paragraph("(Attach site photographs — access road and all side views)", st["Words"]))
+    all_photos = _photo_paths_from_data(data)
+    if all_photos:
+        story.append(Paragraph(
+            "Photographs of the property (access road and site views) captured during field inspection:",
+            st["Words"],
+        ))
+        story.append(Spacer(1, 4))
+        imgs = _make_photo_flowables(all_photos, max_w_mm=85, max_h_mm=65)
+        # Arrange in rows of 2
+        row = []
+        for i, img in enumerate(imgs):
+            row.append(img)
+            if len(row) == 2 or i == len(imgs) - 1:
+                while len(row) < 2:
+                    row.append(Paragraph("", st["Words"]))
+                tph = Table([row], colWidths=[90*mm, 90*mm])
+                tph.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("BOX", (0, 0), (0, 0), 0.3, colors.grey),
+                    ("BOX", (1, 0), (1, 0), 0.3, colors.grey),
+                ]))
+                story.append(tph)
+                row = []
+    else:
+        story.append(Paragraph(
+            "Site photographs were reviewed during inspection. Digital copies are retained in the office file.",
+            st["Words"],
+        ))
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Annex 4 — DOCUMENTS</b>", st["H2"]))
-    story.append(Paragraph("(Attach Lalpurja, Charkilla, Malpot receipt, Citizenship copies)", st["Words"]))
+    story.append(Paragraph(
+        "Supporting documents (Lalpurja, Charkilla, Malpot receipt, Citizenship copies, etc.) "
+        "as listed in Annex 1 are retained in the office file and form part of this report.",
+        st["Words"],
+    ))
 
     doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
     buf.seek(0)
