@@ -86,15 +86,35 @@ class CompanySeal(Flowable):
         c.drawCentredString(cx, cy - 14, "JHAPA")
 
 
-def make_logo_flowable():
-    """Prefer static/logo.png if present, else drawn seal."""
+def make_logo_flowable(size_mm=22):
+    """Prefer static/logo.png (company logo), else drawn seal."""
     logo_path = os.path.join(os.path.dirname(__file__), "static", "logo.png")
     if os.path.isfile(logo_path):
         try:
-            return Image(logo_path, width=22*mm, height=22*mm)
+            return Image(logo_path, width=size_mm*mm, height=size_mm*mm)
         except Exception:
             pass
-    return CompanySeal(size=55)
+    return CompanySeal(size=int(size_mm * 2.5))
+
+
+def make_qr_flowable(url: str, size_mm=28):
+    """QR code linking to public verification URL."""
+    if not url:
+        return Spacer(1, size_mm*mm)
+    try:
+        import qrcode
+        from reportlab.lib.utils import ImageReader
+        qr = qrcode.QRCode(version=2, box_size=6, border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return Image(buf, width=size_mm*mm, height=size_mm*mm)
+    except Exception:
+        return Paragraph(f"<font size='6'>Verify: {url}</font>", getSampleStyleSheet()["Normal"])
+
 
 
 def styles():
@@ -240,6 +260,95 @@ def add_page_number(canvas, doc):
     canvas.restoreState()
 
 
+
+
+def valuator_response_page(story, st, data, req, client, summary, plots):
+    """Page matching sample 'Valuator Response' checklist (SN 1–56 style)."""
+    story.append(PageBreak())
+    story.append(Paragraph("<b>VALUATOR RESPONSE</b>", st["MainTitle"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=NAVY))
+    story.append(Spacer(1, 4))
+    bldg = data.get("building") or {}
+    bd = bldg.get("details") or {}
+    pin0 = req["plots"][0] if req.get("plots") else {}
+    plot_nos = " & ".join(p["plot_no"] for p in plots)
+    roads = " / ".join(filter(None, [p.get("road_width") or p.get("road_type") for p in req.get("plots", [])]))
+    fronts = " / ".join(filter(None, [p.get("frontage") for p in req.get("plots", [])]))
+    landmarks = " / ".join(filter(None, [p.get("nearest_landmark") for p in req.get("plots", [])]))
+    rows = [
+        ["SN", "Description", "Valuator Response"],
+        ["1", "Name of the owner", client.get("owner_name", "")],
+        ["2", "Name of the client", client.get("client_name", "")],
+        ["3", "FMV of the property", f"{summary.get('total_fmv', 0):,.2f}"],
+        ["4", "DV of the property", f"{summary.get('total_distress', 0):,.2f}"],
+        ["5", "Nearest Land Mark", landmarks or "-"],
+        ["6", "Land title deed", pin0.get("title_deed_type", "Normal Sale")],
+        ["7", "Original Blue print of land / trace map", pin0.get("original_blueprint", "Yes")],
+        ["8", "Type of road", pin0.get("road_type", "") or roads],
+        ["9", "Width of road", roads],
+        ["10", "Motorable road", pin0.get("motorable", "Yes")],
+        ["11", "Road expansion activity", pin0.get("road_expansion", "No")],
+        ["12", "Uses of land", pin0.get("importance", "Residential")],
+        ["13", "Shape of land", pin0.get("shape", "Regular")],
+        ["14", "Frontage of land", fronts],
+        ["15", "Plot number", plot_nos],
+        ["16", "Address of Land as per Charkilla", client.get("owner_address_charkilla", "")],
+        ["17", "Type of Land", pin0.get("land_type", "Residential")],
+        ["18", "Area as per Lal purja (sq. m)", ", ".join(f"{p['lalpurja_sqm']:.2f}" for p in plots)],
+        ["19", "Area as per Actual measurement (sq. m)", ", ".join(f"{p['site_sqm']:.2f}" for p in plots)],
+        ["20", "Area as per cadastral map (sq.m)", ", ".join(f"{p['cadastral_sqm']:.2f}" for p in plots)],
+        ["21", "Area considered for valuation (Sq. m)", ", ".join(f"{p['considered_sqm']:.2f}" for p in plots)],
+        ["22", "Area deducted for valuation (sq.m)", ", ".join(f"{p['deducted_sqm']:.2f}" for p in plots)],
+        ["23", "High tension line", pin0.get("high_tension", "NOT PASSING")],
+        ["24", "Type of building", bd.get("building_type", "NA") if bd else "NA"],
+        ["25", "No of storey", str(bd.get("storeys", "NA")) if bd else "NA"],
+        ["26", "Built up area", str(bd.get("built_up_sft", "NA")) if bd else "NA"],
+        ["27", "Year of completion", bd.get("year", "NA") if bd else "NA"],
+        ["28", "Naksa pass", bd.get("naksa_pass", "NA") if bd else "NA"],
+        ["29", "Construction completion certificate", bd.get("completion_certificate", "NA") if bd else "NA"],
+        ["30", "Building constructed as per approved drawings", bd.get("constructed_as_per_drawing", "NA") if bd else "NA"],
+        ["31", "Original four boundary certificate", pin0.get("original_charkilla", "")],
+        ["32", "Municipal four boundary certificate", pin0.get("municipal_charkilla", "")],
+        ["33", "Anticipated life of building", str(bd.get("anticipated_life_years", "NA")) if bd else "NA"],
+        ["34", "Pillar of building", bd.get("pillar_size", "NA") if bd else "NA"],
+        ["35", "Type of construction", bd.get("type", "NA") if bd else "NA"],
+        ["36", "Type of ownership", pin0.get("ownership_type", "Single")],
+        ["37", "More than two joint owners of land", pin0.get("joint_owners", "No")],
+        ["38", "Date of registration", pin0.get("reg_date", "")],
+        ["39", "Land registration done by way of", pin0.get("title_deed_type", "Normal Sale")],
+        ["40", "Legal litigation period", "No"],
+        ["41", "ROW deducted as per govt rules", "Yes"],
+        ["42", "Collateral within protected heritage area", "No"],
+        ["43", "River/stream/lakes near collateral", pin0.get("near_river", "No")],
+        ["44", "Within 200 m of international border", pin0.get("near_border", "No")],
+        ["45", "Sewage/dumping/hazardous features affecting", "No"],
+        ["46", "Irregular shape (>6 sides)", pin0.get("irregular_shape", "No")],
+        ["47", "Land inclination > 40 degree", pin0.get("high_inclination", "No")],
+        ["48", "Area of land < 79.5 sq.m", "No"],
+        ["49", "Too many scattered plots", "No"],
+        ["50", "Political disrupted area", "No"],
+        ["51", "Low salability prospects", "No"],
+        ["52", "Adjoined with sukumbasi tole", pin0.get("sukumbasi", "No")],
+        ["53", "Area > 2 bigha terai / 20 ropani hills", "No"],
+        ["54", "Road access as per blue print", pin0.get("access_at_blueprint", "No")],
+        ["55", "Road access as per four boundary certificate", pin0.get("road_access_charkilla", "Yes")],
+        ["56", "Property in the name of guthi", pin0.get("guthi", "No")],
+    ]
+    t = Table(rows, colWidths=[12*mm, 95*mm, 75*mm])
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    story.append(t)
+
+
 def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -249,13 +358,17 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     )
     st = styles()
     story = []
-    logo = make_logo_flowable()
+    logo = make_logo_flowable(24)
+    verify_url = data.get("verify_url") or ""
+    report_id = data.get("report_id") or ""
+    qr = make_qr_flowable(verify_url, 26)
 
     req = data["request"]
     client = req["client"]
     summary = data["summary"]
     plots = data["plots"]
     bank = data["bank"]
+    any_belting = data.get("any_belting", any(p.get("use_belting") for p in plots))
     firm = req
 
     prop_type = "Land & Building" if data["building"]["fmv"] > 0 else "Land"
@@ -311,6 +424,31 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     story.append(t)
 
     # ========== 2. TOC ==========
+    # Verification strip on cover
+    if report_id:
+        vrows = [[
+            qr,
+            Paragraph(
+                f"<b>Report ID:</b> {report_id}<br/>"
+                f"<b>Scan QR to verify</b> this report online.<br/>"
+                f"<font size='7'>If values differ from verification page, document may be altered.</font><br/>"
+                f"<font size='6'>{verify_url}</font>",
+                st["Small"],
+            ),
+        ]]
+        vt = Table(vrows, colWidths=[32*mm, 150*mm])
+        vt.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX", (0, 0), (-1, -1), 0.5, NAVY),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F0FFF4")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(Spacer(1, 6))
+        story.append(vt)
+        story.append(Paragraph("<i>Scan to verify authenticity — Dynamic Solution registry</i>", st["Words"]))
+
     story.append(PageBreak())
     story.append(Paragraph("<u>Table of Contents</u>", st["MainTitle"]))
     story.append(Spacer(1, 6))
@@ -428,7 +566,7 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
         "5. Valuation for establishing Fair Market value for mortgaging purpose.",
         "6. Firm is fully authorized under prevalent laws and competent to carry out valuation.",
         "7. Valuation guidelines of the bank have been fully complied with.",
-        "8. Belting carried out: Belt-2 = 66% of Belt-1 market rate; Belt-3 = 50% of Belt-1 market rate.",
+        ( "8. Belting carried out: Belt-2 = 66% of Belt-1 market rate; Belt-3 = 50% of Belt-1 market rate." if any_belting else "8. Belting not applied for this property." ),
         "9. Area more than 508.737 sq.m → 15% deduction for land development (where applicable).",
     ]:
         story.append(Paragraph(d, st["Small"]))

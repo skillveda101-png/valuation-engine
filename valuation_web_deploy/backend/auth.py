@@ -33,6 +33,7 @@ def get_db():
 
 
 def init_db():
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -172,3 +173,69 @@ def list_valuations(limit: int = 50):
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
+
+
+def ensure_reports_table():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            username TEXT,
+            client_name TEXT,
+            owner_name TEXT,
+            bank_name TEXT,
+            branch TEXT,
+            plot_nos TEXT,
+            total_fmv REAL,
+            total_distress REAL,
+            valuation_date TEXT,
+            content_hash TEXT,
+            payload_json TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_report_record(report_id: str, username: str, req: dict, summary: dict, content_hash: str):
+    ensure_reports_table()
+    import json
+    from datetime import datetime
+    plots = req.get("plots") or []
+    plot_nos = ", ".join(str(p.get("plot_no", "")) for p in plots)
+    client = req.get("client") or {}
+    conn = get_db()
+    conn.execute(
+        """INSERT OR REPLACE INTO reports
+           (id, created_at, username, client_name, owner_name, bank_name, branch,
+            plot_nos, total_fmv, total_distress, valuation_date, content_hash, payload_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            report_id,
+            datetime.utcnow().isoformat() + "Z",
+            username,
+            client.get("client_name", ""),
+            client.get("owner_name", ""),
+            req.get("bank_name", ""),
+            req.get("branch", ""),
+            plot_nos,
+            summary.get("total_fmv", 0),
+            summary.get("total_distress", 0),
+            req.get("valuation_date", ""),
+            content_hash,
+            json.dumps({"summary": summary, "bank": req.get("bank_name"), "plots": plot_nos}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_report_record(report_id: str):
+    ensure_reports_table()
+    conn = get_db()
+    row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)

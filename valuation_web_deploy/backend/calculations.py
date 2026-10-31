@@ -1,9 +1,9 @@
 """
-Valuation calculation engine – matches DYNAMIC SOLUTION Excel / PDF reports.
+Valuation engine – configurable bank rules, optional belting, multi-plot, building.
 """
 
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 SQM_PER_DHUR = 16.93
@@ -13,35 +13,48 @@ LAND_DEV_THRESHOLD = 508.737
 LAND_DEV_PCT = 0.15
 
 
-class BankConfig(BaseModel):
+class BankRule(BaseModel):
+    """Per-bank FMV weighting and distress."""
     name: str
-    mrv_pct: float = 0.7
-    grv_pct: float = 0.3
-    distress_factor: float = 0.8
+    mrv_pct: float = 0.70          # market share e.g. 0.70 or 0.60
+    grv_pct: float = 0.30          # govt share
+    distress_factor: float = 0.80
     belt2_market_factor: float = 0.66
     belt3_market_factor: float = 0.50
+    notes: str = ""
 
 
-BANK_CONFIGS = {
-    "Nabil Bank Limited": BankConfig(name="Nabil Bank Limited"),
-    "Laxmi Sunrise Bank Limited": BankConfig(name="Laxmi Sunrise Bank Limited"),
-    "Machhapuchhre Bank Limited": BankConfig(name="Machhapuchhre Bank Limited"),
+# Presets – user can override mrv/grv from frontend
+BANK_PRESETS: Dict[str, BankRule] = {
+    "Nabil Bank Limited": BankRule(name="Nabil Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
+    "Laxmi Sunrise Bank Limited": BankRule(name="Laxmi Sunrise Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
+    "Machhapuchhre Bank Limited": BankRule(name="Machhapuchhre Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
+    "Global IME Bank Limited": BankRule(name="Global IME Bank Limited", mrv_pct=0.60, grv_pct=0.40, distress_factor=0.80),
+    "NIC Asia Bank Limited": BankRule(name="NIC Asia Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.75),
+    "Prabhu Bank Limited": BankRule(name="Prabhu Bank Limited", mrv_pct=0.60, grv_pct=0.40, distress_factor=0.80),
+    "Custom / Other": BankRule(name="Custom / Other", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
 }
+
+# Keep alias used by main.py
+BANK_CONFIGS = BANK_PRESETS
 
 
 class PlotInput(BaseModel):
     plot_no: str
-    lalpurja_sqm: float
-    cadastral_sqm: float
-    site_measurement_sqm: float
-    deducted_row_sqm: float = 0.0
-    belt1_sqm: float = 0.0
-    belt2_sqm: float = 0.0
-    belt3_sqm: float = 0.0
-    govt_rate: float
+    lalpurja_sqm: float = 0
+    cadastral_sqm: float = 0
+    site_measurement_sqm: float = 0
+    deducted_row_sqm: float = 0
+    use_belting: bool = False
+    belt1_sqm: float = 0
+    belt2_sqm: float = 0
+    belt3_sqm: float = 0
+    govt_rate: float = 0
     govt_rate_unit: str = "Kattha"
-    market_rate: float
+    market_rate: float = 0
     market_rate_unit: str = "Kattha"
+    location_type: str = "Nagarpalika"   # Nagarpalika | Gaupalika
+    road_width_ft: float = 0
     east: str = ""
     west: str = ""
     north: str = ""
@@ -50,11 +63,12 @@ class PlotInput(BaseModel):
     road_type: str = ""
     frontage: str = ""
     distance_to_market: str = ""
+    nearest_landmark: str = ""
     shape: str = "Regular (Refer the location & site plan)"
     importance: str = "Residential"
     title_deed_type: str = "Normal Sale"
     ownership_type: str = "Single"
-    land_type: str = "Freehold"
+    land_type: str = "Residential"
     reg_no: str = ""
     reg_date: str = ""
     reg_office: str = "Malpot Karyalaya Jhapa"
@@ -74,7 +88,10 @@ class PlotInput(BaseModel):
     sukumbasi: str = "No"
     joint_owners: str = "No"
     original_charkilla: str = ""
+    municipal_charkilla: str = ""
+    original_blueprint: str = "Yes"
     comments: str = ""
+    gps: str = ""
 
 
 class BuildingInput(BaseModel):
@@ -96,19 +113,19 @@ class BuildingInput(BaseModel):
 
 class ClientInput(BaseModel):
     client_name: str
-    client_address_citizenship: str
-    citizenship_no: str
-    citizenship_date: str
-    father_name: str
-    contact_no: str
-    owner_name: str
-    owner_address_citizenship: str
-    owner_address_charkilla: str
-    owner_address_dhanipurja: str
-    owner_citizenship_no: str
-    owner_citizenship_date: str
-    owner_father: str
-    owner_contact: str
+    client_address_citizenship: str = ""
+    citizenship_no: str = ""
+    citizenship_date: str = ""
+    father_name: str = ""
+    contact_no: str = ""
+    owner_name: str = ""
+    owner_address_citizenship: str = ""
+    owner_address_charkilla: str = ""
+    owner_address_dhanipurja: str = ""
+    owner_citizenship_no: str = ""
+    owner_citizenship_date: str = ""
+    owner_father: str = ""
+    owner_contact: str = ""
     relationship: str = "Self"
     is_company: bool = False
 
@@ -116,11 +133,15 @@ class ClientInput(BaseModel):
 class ValuationRequest(BaseModel):
     bank_name: str = "Nabil Bank Limited"
     branch: str = "Kakarvitta"
-    valuation_date: str
+    # Allow override of bank rule from UI
+    mrv_pct: Optional[float] = None
+    grv_pct: Optional[float] = None
+    distress_factor: Optional[float] = None
+    valuation_date: str = ""
     agreement_date: str = "2023-11-26"
     letter_no: str = ""
     letter_received_date: str = ""
-    field_visit_date: str
+    field_visit_date: str = ""
     gps: str = ""
     loan_type: str = "Education Loan Only"
     client: ClientInput
@@ -137,7 +158,7 @@ class ValuationRequest(BaseModel):
 
 
 def rate_to_per_sqm(rate: float, unit: str) -> float:
-    u = unit.lower().replace(" ", "").replace(".", "")
+    u = (unit or "Kattha").lower().replace(" ", "").replace(".", "")
     if u in ("sqm", "m2"):
         return rate
     if u in ("kattha", "katha"):
@@ -150,6 +171,8 @@ def rate_to_per_sqm(rate: float, unit: str) -> float:
 
 
 def sqm_to_bkd(sqm: float) -> str:
+    if abs(sqm) < 0.001:
+        return "0-0-0"
     b = int(sqm // SQM_PER_BIGHA)
     rem = sqm % SQM_PER_BIGHA
     k = int(rem // SQM_PER_KATTHA)
@@ -157,23 +180,41 @@ def sqm_to_bkd(sqm: float) -> str:
     return f"{b}-{k}-{d}"
 
 
-def calculate_plot_value(plot: PlotInput, bank: BankConfig) -> Dict[str, Any]:
-    considered = max(0.0, plot.site_measurement_sqm - plot.deducted_row_sqm)
+def resolve_bank(req: ValuationRequest) -> BankRule:
+    base = BANK_PRESETS.get(req.bank_name, BANK_PRESETS["Custom / Other"]).model_copy()
+    if req.mrv_pct is not None:
+        base.mrv_pct = float(req.mrv_pct)
+    if req.grv_pct is not None:
+        base.grv_pct = float(req.grv_pct)
+    if req.distress_factor is not None:
+        base.distress_factor = float(req.distress_factor)
+    # normalize if user only set one
+    s = base.mrv_pct + base.grv_pct
+    if abs(s - 1.0) > 0.01 and s > 0:
+        base.mrv_pct = base.mrv_pct / s
+        base.grv_pct = base.grv_pct / s
+    return base
 
+
+def calculate_plot_value(plot: PlotInput, bank: BankRule) -> Dict[str, Any]:
+    considered = max(0.0, plot.site_measurement_sqm - plot.deducted_row_sqm)
     apply_dev = considered > LAND_DEV_THRESHOLD
     net_after_dev = considered * (1 - LAND_DEV_PCT) if apply_dev else considered
     dev_deduction = considered - net_after_dev
 
-    b1, b2, b3 = plot.belt1_sqm, plot.belt2_sqm, plot.belt3_sqm
-    if b1 + b2 + b3 < 0.1:
-        b1 = considered
+    use_belt = bool(plot.use_belting)
+    b1 = plot.belt1_sqm if use_belt else considered
+    b2 = plot.belt2_sqm if use_belt else 0.0
+    b3 = plot.belt3_sqm if use_belt else 0.0
+    if use_belt and (b1 + b2 + b3) < 0.1:
+        b1, b2, b3 = considered, 0.0, 0.0
 
     total_belt = b1 + b2 + b3
-    if total_belt > 0.1 and abs(total_belt - considered) > 1:
+    if use_belt and total_belt > 0.1 and abs(total_belt - considered) > 1:
         scale = considered / total_belt
         b1, b2, b3 = b1 * scale, b2 * scale, b3 * scale
 
-    if apply_dev and total_belt > 0:
+    if apply_dev:
         factor = 1 - LAND_DEV_PCT
         n1, n2, n3 = b1 * factor, b2 * factor, b3 * factor
     else:
@@ -185,22 +226,26 @@ def calculate_plot_value(plot: PlotInput, bank: BankConfig) -> Dict[str, Any]:
     def weighted(mkt_factor: float) -> float:
         return (market_sqm * mkt_factor * bank.mrv_pct) + (govt_sqm * bank.grv_pct)
 
-    rate1 = weighted(1.0)
-    rate2 = weighted(bank.belt2_market_factor)
-    rate3 = weighted(bank.belt3_market_factor)
+    if use_belt:
+        rate1 = weighted(1.0)
+        rate2 = weighted(bank.belt2_market_factor)
+        rate3 = weighted(bank.belt3_market_factor)
+        fmv1, fmv2, fmv3 = n1 * rate1, n2 * rate2, n3 * rate3
+    else:
+        rate1 = weighted(1.0)
+        rate2 = rate3 = 0.0
+        fmv1, fmv2, fmv3 = net_after_dev * rate1, 0.0, 0.0
+        n1, n2, n3 = net_after_dev, 0.0, 0.0
 
-    fmv1 = n1 * rate1
-    fmv2 = n2 * rate2
-    fmv3 = n3 * rate3
     raw_fmv = fmv1 + fmv2 + fmv3
     fmv = int(raw_fmv // 1000 * 1000)
     distress = int(round(fmv * bank.distress_factor))
-
     raw_mv = net_after_dev * market_sqm
     mv = int(raw_mv // 1000 * 1000)
 
     return {
         "plot_no": plot.plot_no,
+        "use_belting": use_belt,
         "lalpurja_sqm": plot.lalpurja_sqm,
         "cadastral_sqm": plot.cadastral_sqm,
         "site_sqm": plot.site_measurement_sqm,
@@ -229,17 +274,17 @@ def calculate_plot_value(plot: PlotInput, bank: BankConfig) -> Dict[str, Any]:
         "net_kattha": round(net_after_dev / SQM_PER_KATTHA, 3),
         "bkd": sqm_to_bkd(net_after_dev),
         "apply_land_dev": apply_dev,
+        "location_type": plot.location_type,
+        "road_width_ft": plot.road_width_ft,
     }
 
 
 def calculate_building_value(bldg: Optional[BuildingInput]) -> Dict[str, Any]:
     if not bldg or not bldg.has_building:
         return {"fmv": 0, "distress": 0, "details": None}
-
     sft = bldg.built_up_area_sft
     if sft <= 0 and bldg.built_up_area_sqm > 0:
         sft = bldg.built_up_area_sqm * 10.7639
-
     gross = sft * bldg.construction_cost_per_sft
     dep = gross * (bldg.depreciation_pct / 100.0)
     net = gross - dep
@@ -256,38 +301,14 @@ def calculate_building_value(bldg: Optional[BuildingInput]) -> Dict[str, Any]:
             "net": round(net, 0),
             "storeys": bldg.storeys,
             "type": bldg.construction_type,
+            "building_type": bldg.building_type,
             "year": bldg.year_of_completion_bs,
-        }
-    }
-
-
-def run_valuation(req: ValuationRequest) -> Dict[str, Any]:
-    bank = BANK_CONFIGS.get(req.bank_name, BANK_CONFIGS["Nabil Bank Limited"])
-    plot_results = [calculate_plot_value(p, bank) for p in req.plots]
-    land_fmv = sum(p["fmv"] for p in plot_results)
-    land_mv = sum(p["mv"] for p in plot_results)
-    land_distress = sum(p["distress"] for p in plot_results)
-
-    bldg = calculate_building_value(req.building)
-    total_fmv = land_fmv + bldg["fmv"]
-    total_distress = land_distress + bldg["distress"]
-
-    return {
-        "request": req.model_dump(),
-        "bank": bank.model_dump(),
-        "plots": plot_results,
-        "building": bldg,
-        "summary": {
-            "land_fmv": land_fmv,
-            "land_mv": land_mv,
-            "land_distress": land_distress,
-            "building_fmv": bldg["fmv"],
-            "building_distress": bldg["distress"],
-            "total_fmv": total_fmv,
-            "total_distress": total_distress,
-            "fmv_words": number_to_words(total_fmv),
-            "distress_words": number_to_words(total_distress),
-        }
+            "naksa_pass": bldg.naksa_pass,
+            "completion_certificate": bldg.completion_certificate,
+            "constructed_as_per_drawing": bldg.constructed_as_per_drawing,
+            "anticipated_life_years": bldg.anticipated_life_years,
+            "pillar_size": bldg.pillar_size,
+        },
     }
 
 
@@ -301,18 +322,58 @@ def number_to_words(n: float) -> str:
     tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
 
     def _w(x):
-        if x < 10: return units[x]
-        if x < 20: return teens[x - 10]
-        if x < 100: return tens[x // 10] + (" " + units[x % 10] if x % 10 else "")
-        if x < 1000: return units[x // 100] + " Hundred" + (" " + _w(x % 100) if x % 100 else "")
+        if x < 10:
+            return units[x]
+        if x < 20:
+            return teens[x - 10]
+        if x < 100:
+            return tens[x // 10] + (" " + units[x % 10] if x % 10 else "")
+        if x < 1000:
+            return units[x // 100] + " Hundred" + (" " + _w(x % 100) if x % 100 else "")
         return str(x)
 
     crore, rem = divmod(n, 10000000)
     lakh, rem = divmod(rem, 100000)
     thousand, rem = divmod(rem, 1000)
     parts = []
-    if crore: parts.append(_w(crore) + " Crore")
-    if lakh: parts.append(_w(lakh) + " Lakh")
-    if thousand: parts.append(_w(thousand) + " Thousand")
-    if rem: parts.append(_w(rem))
+    if crore:
+        parts.append(_w(crore) + " Crore")
+    if lakh:
+        parts.append(_w(lakh) + " Lakh")
+    if thousand:
+        parts.append(_w(thousand) + " Thousand")
+    if rem:
+        parts.append(_w(rem))
     return " ".join(parts) + " Rupees and No Paisa"
+
+
+def run_valuation(req: ValuationRequest) -> Dict[str, Any]:
+    bank = resolve_bank(req)
+    plot_results = [calculate_plot_value(p, bank) for p in req.plots]
+    land_fmv = sum(p["fmv"] for p in plot_results)
+    land_mv = sum(p["mv"] for p in plot_results)
+    land_distress = sum(p["distress"] for p in plot_results)
+    any_belting = any(p["use_belting"] for p in plot_results)
+
+    bldg = calculate_building_value(req.building)
+    total_fmv = land_fmv + bldg["fmv"]
+    total_distress = land_distress + bldg["distress"]
+
+    return {
+        "request": req.model_dump(),
+        "bank": bank.model_dump(),
+        "plots": plot_results,
+        "building": bldg,
+        "any_belting": any_belting,
+        "summary": {
+            "land_fmv": land_fmv,
+            "land_mv": land_mv,
+            "land_distress": land_distress,
+            "building_fmv": bldg["fmv"],
+            "building_distress": bldg["distress"],
+            "total_fmv": total_fmv,
+            "total_distress": total_distress,
+            "fmv_words": number_to_words(total_fmv),
+            "distress_words": number_to_words(total_distress),
+        },
+    }
