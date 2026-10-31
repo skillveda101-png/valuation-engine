@@ -1,0 +1,21 @@
+# Deploy only the frontend folder to Netlify
+
+[build]
+  publish = "."
+  # no build command – pure static HTML
+
+[[redirects]]
+  from = "/field"
+  to = "/field.html"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"

@@ -25,6 +25,8 @@ from auth import (
     find_site_visits_for_plots, mark_site_visit_used,
     save_pdf_record, list_pdf_records, get_pdf_record,
     ensure_storage_dirs, PHOTOS_DIR, PDFS_DIR,
+    ensure_banks_tables, list_banks_db, upsert_bank, delete_bank,
+    list_branches, add_branch, delete_branch, get_bank_db,
 )
 
 app = FastAPI(title="Property Valuation Engine", version="4.0.0")
@@ -37,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
+FRONTEND = os.path.join(os.path.dirname(__file__), "frontend")  # bundled with backend for Render
 PUBLIC_BASE = os.environ.get("PUBLIC_API_URL", "https://valuation-engine-m013.onrender.com").rstrip("/")
 
 
@@ -46,6 +48,7 @@ def startup():
     init_db()
     ensure_reports_table()
     ensure_storage_dirs()
+    ensure_banks_tables()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -109,10 +112,72 @@ async def me(user=Depends(get_current_user)):
 
 @app.get("/api/banks")
 async def banks():
+    rows = list_banks_db()
+    if rows:
+        return [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "mrv_pct": r["mrv_pct"],
+                "grv_pct": r["grv_pct"],
+                "distress_factor": r["distress_factor"],
+                "notes": r.get("notes") or "",
+            }
+            for r in rows
+        ]
+    # fallback to code presets
     return [
         {"name": b.name, "mrv_pct": b.mrv_pct, "grv_pct": b.grv_pct, "distress_factor": b.distress_factor}
         for b in BANK_PRESETS.values()
     ]
+
+
+class BankBody(BaseModel):
+    name: str
+    mrv_pct: float = 70  # accept 70 or 0.70
+    grv_pct: float = 30
+    distress_factor: float = 80
+    notes: str = ""
+
+
+@app.post("/api/banks")
+async def create_or_update_bank(body: BankBody, user=Depends(get_current_user)):
+    try:
+        rec = upsert_bank(body.name, body.mrv_pct, body.grv_pct, body.distress_factor, body.notes)
+        return {"ok": True, "bank": rec}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/banks/{name}")
+async def api_delete_bank(name: str, user=Depends(get_current_user)):
+    delete_bank(name)
+    return {"ok": True}
+
+
+@app.get("/api/branches")
+async def api_list_branches(bank_name: Optional[str] = None, user=Depends(get_current_user)):
+    return list_branches(bank_name)
+
+
+class BranchBody(BaseModel):
+    bank_name: str
+    branch_name: str
+
+
+@app.post("/api/branches")
+async def api_add_branch(body: BranchBody, user=Depends(get_current_user)):
+    try:
+        rec = add_branch(body.bank_name, body.branch_name)
+        return {"ok": True, "branch": rec}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/branches/{branch_id}")
+async def api_delete_branch(branch_id: int, user=Depends(get_current_user)):
+    delete_branch(branch_id)
+    return {"ok": True}
 
 
 @app.post("/api/calculate")

@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dynamic Solution – Valuation Engine</title>
+<script src="config.js"></script>
+<style>
+:root {
+  --navy:#1a365d; --gold:#c9a227; --bg:#f0f4f8; --card:#fff;
+  --border:#e2e8f0; --text:#2d3748; --muted:#718096; --ok:#276749; --err:#c53030;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+.hidden{display:none!important}
+#loginScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a365d,#2c5282)}
+.login-box{background:#fff;padding:2rem;border-radius:12px;width:100%;max-width:360px;box-shadow:0 20px 40px rgba(0,0,0,.2)}
+.login-box h1{margin:0 0 .25rem;font-size:1.25rem;color:var(--navy)}
+.login-box p{margin:0 0 1.25rem;color:var(--muted);font-size:.9rem}
+label{display:block;font-size:.8rem;font-weight:600;margin:.6rem 0 .25rem;color:#4a5568}
+input,select,textarea{width:100%;padding:.55rem .7rem;border:1px solid var(--border);border-radius:8px;font-size:.9rem}
+input:focus,select:focus,textarea:focus{outline:2px solid #90cdf4;border-color:#4299e1}
+button,.btn{cursor:pointer;border:none;border-radius:8px;padding:.6rem 1rem;font-weight:600;font-size:.9rem}
+.btn-primary{background:var(--navy);color:#fff}
+.btn-primary:hover{background:#2c5282}
+.btn-gold{background:var(--gold);color:#1a202c}
+.btn-outline{background:#fff;border:1px solid var(--border);color:var(--text)}
+.btn-danger{background:#fff;border:1px solid #feb2b2;color:var(--err)}
+.btn-sm{padding:.35rem .7rem;font-size:.8rem}
+header.app{background:var(--navy);color:#fff;padding:.75rem 1.25rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem}
+header.app h1{margin:0;font-size:1.1rem}
+header.app .user{font-size:.85rem;opacity:.9}
+.wrap{max-width:1100px;margin:0 auto;padding:1rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.card h2{margin:0 0 .75rem;font-size:1rem;color:var(--navy);border-bottom:2px solid var(--gold);padding-bottom:.35rem}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
+@media(max-width:800px){.grid2,.grid3,.grid4{grid-template-columns:1fr}}
+.plot-card{border:1px solid #cbd5e0;border-radius:10px;padding:1rem;margin-bottom:.75rem;background:#fafbfc}
+.plot-card h3{margin:0 0 .5rem;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
+.belt-box{background:#edf2f7;border-radius:8px;padding:.75rem;margin-top:.5rem}
+.hint{font-size:.75rem;color:var(--muted);margin-top:.15rem}
+.actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}
+#previewBox{background:#f7fafc;border-radius:8px;padding:1rem;font-family:ui-monospace,monospace;font-size:.85rem;white-space:pre-wrap}
+.err{color:var(--err);font-size:.85rem;margin-top:.5rem}
+.ok{color:var(--ok)}
+.toggle{display:flex;align-items:center;gap:.5rem;margin:.5rem 0}
+.toggle input{width:auto}
+.section-note{background:#ebf8ff;border-left:4px solid #3182ce;padding:.5rem .75rem;font-size:.85rem;margin-bottom:.75rem;border-radius:0 8px 8px 0}
+
+/* Tabs */
+.tabs{display:flex;gap:0;background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1rem;flex-wrap:wrap}
+.tab-btn{flex:1;min-width:120px;padding:.85rem 1rem;border:none;background:#fff;color:var(--muted);font-weight:600;font-size:.9rem;cursor:pointer;border-bottom:3px solid transparent;transition:.15s}
+.tab-btn:hover{background:#f7fafc;color:var(--navy)}
+.tab-btn.active{color:var(--navy);border-bottom-color:var(--gold);background:#fffbf0}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* Tables */
+.data-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.data-table th,.data-table td{border:1px solid var(--border);padding:.45rem .6rem;text-align:left}
+.data-table th{background:var(--navy);color:#fff;font-weight:600}
+.data-table tr:nth-child(even){background:#f7fafc}
+.data-table tr:hover{background:#edf2f7}
+.badge{display:inline-block;padding:.15rem .45rem;border-radius:6px;font-size:.72rem;font-weight:600}
+.badge-ok{background:#c6f6d5;color:#276749}
+.badge-pending{background:#fefcbf;color:#975a16}
+.badge-used{background:#bee3f8;color:#2b6cb0}
+.photo-thumb{width:48px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border);vertical-align:middle}
+.bank-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:.75rem;align-items:end;padding:.75rem;border:1px solid var(--border);border-radius:8px;margin-bottom:.5rem;background:#fafbfc}
+@media(max-width:700px){.bank-row{grid-template-columns:1fr}}
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;margin-bottom:1rem}
+@media(max-width:700px){.stat-grid{grid-template-columns:1fr 1fr}}
+.stat-card{background:linear-gradient(135deg,#1a365d,#2c5282);color:#fff;border-radius:10px;padding:1rem;text-align:center}
+.stat-card .n{font-size:1.5rem;font-weight:700}
+.stat-card .l{font-size:.75rem;opacity:.85;margin-top:.2rem}
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-box">
+    <h1>Dynamic Solution</h1>
+    <p>Property Valuation Engine</p>
+    <label>Username</label>
+    <input id="loginUser" value="admin" autocomplete="username" />
+    <label>Password</label>
+    <input id="loginPass" type="password" value="admin123" autocomplete="current-password" />
+    <div class="err" id="loginErr"></div>
+    <button class="btn-primary" style="width:100%;margin-top:1rem" onclick="doLogin()">Login</button>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header class="app">
+    <h1>Dynamic Solution – Valuation</h1>
+    <div class="user">
+      <a id="fieldAppLink" href="/field" target="_blank" style="color:#f6e05e;margin-right:1rem;text-decoration:none">📱 Mobile Field App</a>
+      <span id="userName"></span> · <a href="#" style="color:#fff" onclick="logout();return false">Logout</a>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- Tab bar -->
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="field" onclick="switchTab('field')">📍 Field Data</button>
+      <button type="button" class="tab-btn" data-tab="report" onclick="switchTab('report')">📄 Report Generation</button>
+      <button type="button" class="tab-btn" data-tab="status" onclick="switchTab('status')">📋 Report Status</button>
+      <button type="button" class="tab-btn" data-tab="banks" onclick="switchTab('banks')">🏦 Banks &amp; Rates</button>
+    </div>
+
+    <!-- ========== TAB: Field Data ========== -->
+    <div id="tab-field" class="tab-panel active">
+      <div class="card">
+        <h2>Site visits (from mobile / field)</h2>
+        <div class="section-note">
+          Capture photo + GPS on site using the <a href="/field" target="_blank"><b>Mobile Field App</b></a> (works offline).
+          Required on phone: <b>photo, plot no., bank, branch, client name</b>. Data appears here after sync and is used automatically when generating a report.
+        </div>
+        <div class="actions" style="margin-top:0">
+          <button class="btn-primary btn-sm" onclick="loadSiteVisits()">Refresh</button>
+          <a class="btn-gold btn-sm" id="fieldAppLink2" href="/field" target="_blank" style="text-decoration:none;display:inline-block">Open Field App</a>
+          <input id="fieldFilterPlot" placeholder="Filter plot no." style="max-width:140px" />
+          <input id="fieldFilterClient" placeholder="Filter client" style="max-width:160px" />
+          <button class="btn-outline btn-sm" onclick="loadSiteVisits()">Apply filter</button>
+        </div>
+        <div id="siteVisitsBox" style="margin-top:1rem;overflow:auto"></div>
+      </div>
+    </div>
+
+    <!-- ========== TAB: Report Generation ========== -->
+    <div id="tab-report" class="tab-panel">
+      <div class="card">
+        <h2>1. Bank, branch &amp; job</h2>
+        <div class="section-note">Bank rates (Market % / Govt %) come from the Banks tab presets — you can still override here for this report.</div>
+        <div class="grid3">
+          <div>
+            <label>Bank</label>
+            <select id="bankName" onchange="onBankChange()"></select>
+          </div>
+          <div>
+            <label>Branch</label>
+            <input id="branch" value="Kakarvitta" placeholder="Branch name" />
+          </div>
+          <div>
+            <label>Loan type</label>
+            <input id="loanType" value="Education Loan Only" />
+          </div>
+        </div>
+        <div class="grid4" style="margin-top:.5rem">
+          <div>
+            <label>Market rate weight %</label>
+            <input type="number" id="mrvPct" value="70" min="0" max="100" step="1" />
+          </div>
+          <div>
+            <label>Govt rate weight %</label>
+            <input type="number" id="grvPct" value="30" min="0" max="100" step="1" />
+          </div>
+          <div>
+            <label>Distress %</label>
+            <input type="number" id="distressPct" value="80" min="0" max="100" step="1" />
+          </div>
+          <div>
+            <label>Field visit date</label>
+            <input id="fieldVisit" type="date" />
+          </div>
+        </div>
+        <div class="grid3" style="margin-top:.5rem">
+          <div>
+            <label>Valuation date</label>
+            <input id="valDate" type="date" />
+          </div>
+          <div>
+            <label>Agreement date</label>
+            <input id="agreeDate" value="2023-11-26" />
+          </div>
+          <div>
+            <label>Overall GPS (auto from field if empty)</label>
+            <input id="gps" placeholder="26.66, 88.11" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>2. Client &amp; Owner</h2>
+        <div class="grid2">
+          <div>
+            <label>Client name</label>
+            <input id="clientName" />
+          </div>
+          <div>
+            <label>Owner name</label>
+            <input id="ownerName" />
+          </div>
+          <div>
+            <label>Client address (citizenship)</label>
+            <input id="clientAddr" />
+          </div>
+          <div>
+            <label>Owner address (Charkilla)</label>
+            <input id="ownerCharkilla" />
+          </div>
+          <div>
+            <label>Phone</label>
+            <input id="clientPhone" />
+          </div>
+          <div>
+            <label>Relationship</label>
+            <input id="relation" value="Self" />
+          </div>
+          <div>
+            <label>Citizenship No.</label>
+            <input id="citNo" />
+          </div>
+          <div>
+            <label>Citizenship date</label>
+            <input id="citDate" />
+          </div>
+          <div>
+            <label>Address as per Dhanipurja</label>
+            <input id="dhanipurja" />
+          </div>
+          <div>
+            <label>Owner father name</label>
+            <input id="ownerFather" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>3. Plots <button type="button" class="btn-outline btn-sm" onclick="addPlot()">+ Add plot</button></h2>
+        <div class="section-note">If a site visit exists for the same plot no. / client, GPS and photos are attached automatically when you generate the PDF.</div>
+        <div id="plots"></div>
+      </div>
+
+      <div class="card">
+        <h2>4. Building (optional)</h2>
+        <div class="toggle">
+          <input type="checkbox" id="hasBuilding" onchange="toggleBuilding()" />
+          <label for="hasBuilding" style="margin:0">Include building valuation</label>
+        </div>
+        <div id="buildingBox" class="hidden">
+          <div class="grid3">
+            <div><label>Type</label><input id="bType" value="Residential" /></div>
+            <div><label>Storeys</label><input type="number" id="bStoreys" value="3" /></div>
+            <div><label>Construction</label><input id="bConst" value="RCC" /></div>
+            <div><label>Built-up area (sq.m)</label><input type="number" id="bSqm" step="0.01" /></div>
+            <div><label>Built-up area (sft)</label><input type="number" id="bSft" step="0.01" value="2062.75" /></div>
+            <div><label>Cost per sft (NRs)</label><input type="number" id="bRate" value="2800" /></div>
+            <div><label>Year of completion (BS)</label><input id="bYear" value="2075 B.S." /></div>
+            <div><label>Depreciation %</label><input type="number" id="bDep" value="0" step="0.1" /></div>
+            <div><label>Pillar size</label><input id="bPillar" value="300 MM X 300 MM" /></div>
+            <div><label>Naksa pass</label><select id="bNaksa"><option>Yes</option><option>No</option></select></div>
+            <div><label>Completion certificate</label><select id="bComp"><option>Yes</option><option>No</option></select></div>
+            <div><label>As per approved drawings</label><select id="bDraw"><option>Yes</option><option>No</option></select></div>
+            <div><label>Anticipated life (years)</label><input type="number" id="bLife" value="40" /></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>5. Calculate &amp; generate PDF</h2>
+        <div class="actions" style="margin-top:0">
+          <button class="btn-primary" onclick="doCalculate()">Preview calculation</button>
+          <button class="btn-gold" onclick="doPdf()">Generate &amp; download PDF</button>
+        </div>
+        <div class="err" id="calcErr"></div>
+        <div id="previewBox" class="hidden" style="margin-top:1rem"></div>
+      </div>
+    </div>
+
+    <!-- ========== TAB: Report Status ========== -->
+    <div id="tab-status" class="tab-panel">
+      <div class="stat-grid" id="statusStats">
+        <div class="stat-card"><div class="n" id="statVisits">—</div><div class="l">Site visits</div></div>
+        <div class="stat-card"><div class="n" id="statPdfs">—</div><div class="l">PDF reports</div></div>
+        <div class="stat-card"><div class="n" id="statUsed">—</div><div class="l">Visits linked to reports</div></div>
+        <div class="stat-card"><div class="n" id="statPending">—</div><div class="l">Visits not yet used</div></div>
+      </div>
+      <div class="card">
+        <h2>Generated PDF reports</h2>
+        <div class="actions" style="margin-top:0">
+          <button class="btn-primary btn-sm" onclick="loadPdfRecords()">Refresh</button>
+        </div>
+        <div id="pdfRecordsBox" style="margin-top:1rem;overflow:auto"></div>
+      </div>
+      <div class="card">
+        <h2>Valuation history</h2>
+        <div class="actions" style="margin-top:0">
+          <button class="btn-outline btn-sm" onclick="loadHistory()">Refresh history</button>
+        </div>
+        <div id="historyBox" style="margin-top:1rem;overflow:auto"></div>
+      </div>
+    </div>
+
+    <!-- ========== TAB: Banks & Rates ========== -->
+    <div id="tab-banks" class="tab-panel">
+      <div class="card">
+        <h2>Add / update bank</h2>
+        <div class="section-note">
+          Save a bank with Market %, Government %, and Distress %. It appears in Report Generation dropdown.
+          Enter percentages as whole numbers (e.g. 70, 30, 80). Same name = update existing bank.
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Bank name</label>
+            <input id="newBankName" placeholder="e.g. Everest Bank Limited" />
+          </div>
+          <div>
+            <label>Notes (optional)</label>
+            <input id="newBankNotes" placeholder="optional" />
+          </div>
+        </div>
+        <div class="grid3" style="margin-top:.5rem">
+          <div>
+            <label>Market rate weight %</label>
+            <input type="number" id="newBankMrv" value="70" min="0" max="100" step="1" />
+          </div>
+          <div>
+            <label>Government rate weight %</label>
+            <input type="number" id="newBankGrv" value="30" min="0" max="100" step="1" />
+          </div>
+          <div>
+            <label>Distress %</label>
+            <input type="number" id="newBankDistress" value="80" min="0" max="100" step="1" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn-primary" onclick="saveBank()">Save bank</button>
+          <span id="bankSaveMsg" class="hint"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Banks — Market % / Government % / Distress %</h2>
+        <div class="actions" style="margin-top:0">
+          <button class="btn-outline btn-sm" onclick="loadBanks()">Refresh</button>
+        </div>
+        <div id="banksTableBox" style="margin-top:.75rem"></div>
+      </div>
+
+      <div class="card">
+        <h2>Branches</h2>
+        <div class="section-note">Add branch names under a bank. They become selectable on Report Generation when that bank is chosen.</div>
+        <div class="grid3">
+          <div>
+            <label>Bank</label>
+            <select id="branchBankSelect"></select>
+          </div>
+          <div>
+            <label>Branch name</label>
+            <input id="newBranchName" placeholder="e.g. Kakarvitta" />
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn-primary" style="width:100%" onclick="saveBranch()">Add branch</button>
+          </div>
+        </div>
+        <div id="branchSaveMsg" class="hint"></div>
+        <div id="branchesTableBox" style="margin-top:.75rem"></div>
+      </div>
+
+      <div class="card">
+        <h2>How rates are used</h2>
+        <ul style="margin:0;padding-left:1.2rem;font-size:.9rem;line-height:1.6;color:#4a5568">
+          <li><b>Market weight %</b> — share of market rate in FMV (e.g. 70)</li>
+          <li><b>Govt weight %</b> — share of government rate in FMV (e.g. 30)</li>
+          <li><b>Distress %</b> — Forced / distress value = FMV × this % (e.g. 80)</li>
+          <li>Belt 2 market factor 66% and Belt 3 market factor 50% are applied inside the calculation engine when belting is used.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = (window.VALUATION_API_URL || "").replace(/\/$/, "");
+let token = localStorage.getItem("val_token") || "";
+let bankList = [];
+let plotCount = 0;
+
+function api(path, opts = {}) {
+  const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
+  if (token) headers["Authorization"] = "Bearer " + token;
+  return fetch(API + path, Object.assign({}, opts, {headers}));
+}
+
+function switchTab(name) {
+  document.querySelectorAll(".tab-btn").forEach(b => {
+    b.classList.toggle("active", b.getAttribute("data-tab") === name);
+  });
+  document.querySelectorAll(".tab-panel").forEach(p => {
+    p.classList.toggle("active", p.id === "tab-" + name);
+  });
+  if (name === "field") loadSiteVisits();
+  if (name === "status") { loadPdfRecords(); loadHistory(); updateStats(); }
+  if (name === "banks") renderBanksTable();
+}
+
+async function doLogin() {
+  document.getElementById("loginErr").textContent = "";
+  try {
+    const r = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: document.getElementById("loginUser").value,
+        password: document.getElementById("loginPass").value,
+      }),
+    });
+    if (!r.ok) throw new Error("Login failed");
+    const d = await r.json();
+    token = d.access_token;
+    localStorage.setItem("val_token", token);
+    document.getElementById("userName").textContent = d.full_name || d.username;
+    document.getElementById("loginScreen").classList.add("hidden");
+    document.getElementById("app").classList.remove("hidden");
+    fixFieldAppLinks();
+    await loadBanks();
+    if (plotCount === 0) addPlot();
+    const t = new Date().toISOString().slice(0, 10);
+    document.getElementById("valDate").value = t;
+    document.getElementById("fieldVisit").value = t;
+    loadSiteVisits();
+    loadPdfRecords();
+    updateStats();
+  } catch (e) {
+    document.getElementById("loginErr").textContent = e.message + (API ? " — check API URL / Render awake" : " — set config.js API URL");
+  }
+}
+
+function fixFieldAppLinks() {
+  // Field app is served by the backend; when UI is on Netlify, open backend /field
+  const href = (API ? API.replace(/\/$/, "") + "/field" : "/field");
+  ["fieldAppLink", "fieldAppLink2"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.href = href;
+  });
+}
+
+function logout() {
+  token = "";
+  localStorage.removeItem("val_token");
+  location.reload();
+}
+
+async function loadBanks() {
+  try {
+    const r = await api("/api/banks");
+    bankList = await r.json();
+  } catch {
+    bankList = [
+      {name: "Nabil Bank Limited", mrv_pct: 0.7, grv_pct: 0.3, distress_factor: 0.8},
+      {name: "Custom / Other", mrv_pct: 0.7, grv_pct: 0.3, distress_factor: 0.8},
+    ];
+  }
+  const sel = document.getElementById("bankName");
+  if (sel) {
+    const prev = sel.value;
+    sel.innerHTML = bankList.map(b => `<option value="${b.name}">${b.name}</option>`).join("");
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    onBankChange();
+  }
+  const bsel = document.getElementById("branchBankSelect");
+  if (bsel) {
+    bsel.innerHTML = bankList.map(b => `<option value="${b.name}">${b.name}</option>`).join("");
+  }
+  renderBanksTable();
+  loadBranches();
+}
+
+function onBankChange() {
+  const name = document.getElementById("bankName").value;
+  const b = bankList.find(x => x.name === name) || bankList[0];
+  if (!b) return;
+  document.getElementById("mrvPct").value = Math.round(b.mrv_pct * 100);
+  document.getElementById("grvPct").value = Math.round(b.grv_pct * 100);
+  document.getElementById("distressPct").value = Math.round(b.distress_factor * 100);
+  // refresh branch suggestions for this bank
+  fillBranchSuggestions(name);
+}
+
+function renderBanksTable() {
+  const box = document.getElementById("banksTableBox");
+  if (!box) return;
+  if (!bankList.length) {
+    box.innerHTML = "<em>No banks loaded.</em>";
+    return;
+  }
+  let html = `<table class="data-table">
+    <thead><tr>
+      <th>Bank</th>
+      <th>Market %</th>
+      <th>Government %</th>
+      <th>Distress %</th>
+      <th></th>
+    </tr></thead><tbody>`;
+  bankList.forEach(b => {
+    const m = Math.round(b.mrv_pct * 100);
+    const g = Math.round(b.grv_pct * 100);
+    const d = Math.round(b.distress_factor * 100);
+    const safe = b.name.replace(/'/g, "\\'");
+    html += `<tr>
+      <td><b>${b.name}</b></td>
+      <td>${m}%</td>
+      <td>${g}%</td>
+      <td>${d}%</td>
+      <td style="white-space:nowrap">
+        <button class="btn-outline btn-sm" onclick="useBankInReport('${safe}')">Use in report</button>
+        <button class="btn-outline btn-sm" onclick="editBankForm('${safe}')">Edit</button>
+        <button class="btn-danger btn-sm" onclick="removeBank('${safe}')">Delete</button>
+      </td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  box.innerHTML = html;
+}
+
+function editBankForm(name) {
+  const b = bankList.find(x => x.name === name);
+  if (!b) return;
+  document.getElementById("newBankName").value = b.name;
+  document.getElementById("newBankMrv").value = Math.round(b.mrv_pct * 100);
+  document.getElementById("newBankGrv").value = Math.round(b.grv_pct * 100);
+  document.getElementById("newBankDistress").value = Math.round(b.distress_factor * 100);
+  document.getElementById("newBankNotes").value = b.notes || "";
+  document.getElementById("newBankName").focus();
+}
+
+async function saveBank() {
+  const msg = document.getElementById("bankSaveMsg");
+  msg.textContent = "";
+  const name = document.getElementById("newBankName").value.trim();
+  if (!name) { msg.textContent = "Bank name required"; return; }
+  try {
+    const r = await api("/api/banks", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        mrv_pct: parseFloat(document.getElementById("newBankMrv").value) || 70,
+        grv_pct: parseFloat(document.getElementById("newBankGrv").value) || 30,
+        distress_factor: parseFloat(document.getElementById("newBankDistress").value) || 80,
+        notes: document.getElementById("newBankNotes").value.trim(),
+      }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    msg.textContent = "Saved: " + name;
+    document.getElementById("newBankName").value = "";
+    await loadBanks();
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+async function removeBank(name) {
+  if (!confirm("Delete bank \"" + name + "\" and its branches?")) return;
+  try {
+    const r = await api("/api/banks/" + encodeURIComponent(name), { method: "DELETE" });
+    if (!r.ok) throw new Error(await r.text());
+    await loadBanks();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function useBankInReport(name) {
+  const sel = document.getElementById("bankName");
+  sel.value = name;
+  onBankChange();
+  switchTab("report");
+}
+
+let branchList = [];
+
+async function loadBranches() {
+  try {
+    const r = await api("/api/branches");
+    branchList = r.ok ? await r.json() : [];
+  } catch {
+    branchList = [];
+  }
+  renderBranchesTable();
+  const bank = document.getElementById("bankName") ? document.getElementById("bankName").value : "";
+  if (bank) fillBranchSuggestions(bank);
+}
+
+function renderBranchesTable() {
+  const box = document.getElementById("branchesTableBox");
+  if (!box) return;
+  if (!branchList.length) {
+    box.innerHTML = "<em>No branches saved yet.</em>";
+    return;
+  }
+  let html = `<table class="data-table"><thead><tr><th>Bank</th><th>Branch</th><th></th></tr></thead><tbody>`;
+  branchList.forEach(b => {
+    html += `<tr>
+      <td>${b.bank_name}</td>
+      <td><b>${b.branch_name}</b></td>
+      <td><button class="btn-danger btn-sm" onclick="removeBranch(${b.id})">Delete</button></td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  box.innerHTML = html;
+}
+
+async function saveBranch() {
+  const msg = document.getElementById("branchSaveMsg");
+  msg.textContent = "";
+  const bank_name = document.getElementById("branchBankSelect").value;
+  const branch_name = document.getElementById("newBranchName").value.trim();
+  if (!bank_name || !branch_name) {
+    msg.textContent = "Bank and branch name required";
+    return;
+  }
+  try {
+    const r = await api("/api/branches", {
+      method: "POST",
+      body: JSON.stringify({ bank_name, branch_name }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    msg.textContent = "Branch added";
+    document.getElementById("newBranchName").value = "";
+    await loadBranches();
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+async function removeBranch(id) {
+  if (!confirm("Delete this branch?")) return;
+  try {
+    await api("/api/branches/" + id, { method: "DELETE" });
+    await loadBranches();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function fillBranchSuggestions(bankName) {
+  const input = document.getElementById("branch");
+  if (!input) return;
+  // datalist for branch suggestions
+  let dl = document.getElementById("branchDatalist");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "branchDatalist";
+    document.body.appendChild(dl);
+    input.setAttribute("list", "branchDatalist");
+  }
+  const items = branchList.filter(b => b.bank_name === bankName);
+  dl.innerHTML = items.map(b => `<option value="${b.branch_name}">`).join("");
+}
+
+function toggleBuilding() {
+  document.getElementById("buildingBox").classList.toggle("hidden", !document.getElementById("hasBuilding").checked);
+}
+
+function addPlot() {
+  plotCount++;
+  const id = plotCount;
+  const div = document.createElement("div");
+  div.className = "plot-card";
+  div.id = "plot-" + id;
+  div.innerHTML = `
+    <h3>Plot #${id} <button type="button" class="btn-danger btn-sm" onclick="removePlot(${id})">Remove</button></h3>
+    <div class="grid4">
+      <div><label>Plot No.</label><input data-f="plot_no" value="" placeholder="e.g. 770" /></div>
+      <div><label>Location type</label>
+        <select data-f="location_type"><option>Nagarpalika</option><option>Gaupalika</option></select>
+      </div>
+      <div><label>Road width (ft)</label><input type="number" data-f="road_width_ft" value="16" step="0.1" /></div>
+      <div><label>Road type / access</label><input data-f="road_width" placeholder="16 Ft Gravel Road on West" /></div>
+    </div>
+    <div class="grid4" style="margin-top:.4rem">
+      <div><label>Lalpurja (sq.m)</label><input type="number" data-f="lalpurja_sqm" step="0.01" value="0" /></div>
+      <div><label>Cadastral (sq.m)</label><input type="number" data-f="cadastral_sqm" step="0.01" value="0" /></div>
+      <div><label>Site measure (sq.m)</label><input type="number" data-f="site_measurement_sqm" step="0.01" value="0" /></div>
+      <div><label>ROW deduction (sq.m)</label><input type="number" data-f="deducted_row_sqm" step="0.01" value="0" /></div>
+    </div>
+    <div class="grid4" style="margin-top:.4rem">
+      <div><label>Market rate</label><input type="number" data-f="market_rate" step="0.01" value="0" /></div>
+      <div><label>Market unit</label>
+        <select data-f="market_rate_unit"><option>Kattha</option><option>Sq.M.</option><option>dhur</option></select>
+      </div>
+      <div><label>Govt rate</label><input type="number" data-f="govt_rate" step="0.01" value="0" /></div>
+      <div><label>Govt unit</label>
+        <select data-f="govt_rate_unit"><option>Kattha</option><option>Sq.M.</option><option>dhur</option></select>
+      </div>
+    </div>
+    <div class="grid4" style="margin-top:.4rem">
+      <div><label>East</label><input data-f="east" /></div>
+      <div><label>West</label><input data-f="west" /></div>
+      <div><label>North</label><input data-f="north" /></div>
+      <div><label>South</label><input data-f="south" /></div>
+    </div>
+    <div class="grid4" style="margin-top:.4rem">
+      <div><label>Importance</label><input data-f="importance" value="Residential" /></div>
+      <div><label>Frontage</label><input data-f="frontage" placeholder="e.g. 12 m" /></div>
+      <div><label>Nearest landmark</label><input data-f="nearest_landmark" placeholder="e.g. Highway, school" /></div>
+      <div><label>Distance to market / town</label><input data-f="distance_to_market" placeholder="e.g. 1.5 km" /></div>
+    </div>
+    <div class="grid4" style="margin-top:.4rem">
+      <div><label>GPS for this plot</label><input data-f="gps" placeholder="from field app" /></div>
+    </div>
+    <div class="toggle" style="margin-top:.5rem">
+      <input type="checkbox" id="belt-${id}" data-f="use_belting" onchange="toggleBelt(${id})" />
+      <label for="belt-${id}" style="margin:0">Use belting</label>
+    </div>
+    <div class="belt-box hidden" id="beltbox-${id}">
+      <div class="grid3">
+        <div><label>Belt 1 (sq.m)</label><input type="number" data-f="belt1_sqm" step="0.01" value="0" /></div>
+        <div><label>Belt 2 (sq.m)</label><input type="number" data-f="belt2_sqm" step="0.01" value="0" /></div>
+        <div><label>Belt 3 (sq.m)</label><input type="number" data-f="belt3_sqm" step="0.01" value="0" /></div>
+      </div>
+    </div>
+  `;
+  document.getElementById("plots").appendChild(div);
+}
+
+function toggleBelt(id) {
+  const on = document.getElementById("belt-" + id).checked;
+  document.getElementById("beltbox-" + id).classList.toggle("hidden", !on);
+}
+
+function removePlot(id) {
+  const el = document.getElementById("plot-" + id);
+  if (el) el.remove();
+}
+
+function readPlot(el) {
+  const o = {};
+  el.querySelectorAll("[data-f]").forEach(inp => {
+    const k = inp.getAttribute("data-f");
+    if (inp.type === "checkbox") o[k] = inp.checked;
+    else if (inp.type === "number") o[k] = parseFloat(inp.value) || 0;
+    else o[k] = inp.value;
+  });
+  return o;
+}
+
+function buildRequest() {
+  const plots = [...document.querySelectorAll(".plot-card")].map(readPlot);
+  if (!plots.length) throw new Error("Add at least one plot");
+  const hasB = document.getElementById("hasBuilding").checked;
+  return {
+    bank_name: document.getElementById("bankName").value,
+    branch: document.getElementById("branch").value,
+    mrv_pct: (parseFloat(document.getElementById("mrvPct").value) || 70) / 100,
+    grv_pct: (parseFloat(document.getElementById("grvPct").value) || 30) / 100,
+    distress_factor: (parseFloat(document.getElementById("distressPct").value) || 80) / 100,
+    valuation_date: document.getElementById("valDate").value,
+    agreement_date: document.getElementById("agreeDate").value,
+    field_visit_date: document.getElementById("fieldVisit").value,
+    gps: document.getElementById("gps").value,
+    loan_type: document.getElementById("loanType").value,
+    client: {
+      client_name: document.getElementById("clientName").value,
+      client_address_citizenship: document.getElementById("clientAddr").value,
+      contact_no: document.getElementById("clientPhone").value,
+      citizenship_no: document.getElementById("citNo").value,
+      citizenship_date: document.getElementById("citDate").value,
+      owner_name: document.getElementById("ownerName").value || document.getElementById("clientName").value,
+      owner_address_citizenship: document.getElementById("clientAddr").value,
+      owner_address_charkilla: document.getElementById("ownerCharkilla").value,
+      owner_address_dhanipurja: document.getElementById("dhanipurja").value,
+      owner_citizenship_no: document.getElementById("citNo").value,
+      owner_citizenship_date: document.getElementById("citDate").value,
+      owner_father: document.getElementById("ownerFather").value,
+      owner_contact: document.getElementById("clientPhone").value,
+      relationship: document.getElementById("relation").value,
+      father_name: document.getElementById("ownerFather").value,
+    },
+    plots,
+    building: hasB ? {
+      has_building: true,
+      building_type: document.getElementById("bType").value,
+      storeys: parseInt(document.getElementById("bStoreys").value) || 0,
+      built_up_area_sqm: parseFloat(document.getElementById("bSqm").value) || 0,
+      built_up_area_sft: parseFloat(document.getElementById("bSft").value) || 0,
+      year_of_completion_bs: document.getElementById("bYear").value,
+      construction_type: document.getElementById("bConst").value,
+      construction_cost_per_sft: parseFloat(document.getElementById("bRate").value) || 2800,
+      depreciation_pct: parseFloat(document.getElementById("bDep").value) || 0,
+      naksa_pass: document.getElementById("bNaksa").value,
+      completion_certificate: document.getElementById("bComp").value,
+      constructed_as_per_drawing: document.getElementById("bDraw").value,
+      anticipated_life_years: parseInt(document.getElementById("bLife").value) || 40,
+      pillar_size: document.getElementById("bPillar").value,
+    } : {has_building: false},
+  };
+}
+
+async function doCalculate() {
+  const err = document.getElementById("calcErr");
+  const box = document.getElementById("previewBox");
+  err.textContent = "";
+  try {
+    const req = buildRequest();
+    const r = await api("/api/calculate", {method: "POST", body: JSON.stringify(req)});
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(t || r.statusText);
+    }
+    const d = await r.json();
+    const s = d.summary;
+    let lines = [
+      `Bank rule: ${(d.bank.mrv_pct*100).toFixed(0)}% Market + ${(d.bank.grv_pct*100).toFixed(0)}% Govt · Distress ${(d.bank.distress_factor*100).toFixed(0)}%`,
+      `Belting used: ${d.any_belting ? "Yes" : "No"}`,
+      "",
+      `Land FMV:     NRs. ${s.land_fmv.toLocaleString()}`,
+      `Building FMV: NRs. ${s.building_fmv.toLocaleString()}`,
+      `Total FMV:    NRs. ${s.total_fmv.toLocaleString()}`,
+      `Distress:     NRs. ${s.total_distress.toLocaleString()}`,
+      `In words: ${s.distress_words}`,
+      "",
+    ];
+    d.plots.forEach(p => {
+      lines.push(`Plot ${p.plot_no}: net ${p.net_sqm} sq.m · FMV ${p.fmv.toLocaleString()}${p.use_belting ? " (belted)" : ""}`);
+    });
+    box.textContent = lines.join("\n");
+    box.classList.remove("hidden");
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
+
+async function doPdf() {
+  const err = document.getElementById("calcErr");
+  err.textContent = "";
+  try {
+    const req = buildRequest();
+    // Prefer visit chosen via "Use in report"
+    if (window._pendingPhotoPaths && window._pendingPhotoPaths.length) {
+      req.site_photo_paths = window._pendingPhotoPaths.slice();
+      req.site_visit_uids = (window._pendingVisitUids || []).slice();
+    }
+    try {
+      const plotNos = (req.plots || []).map(p => p.plot_no).filter(Boolean).join(",");
+      if (plotNos) {
+        const qs = new URLSearchParams({ plot_nos: plotNos });
+        if (req.client && req.client.client_name) qs.set("client_name", req.client.client_name);
+        const vr = await api("/api/site-visits/for-plots?" + qs.toString());
+        if (vr.ok) {
+          const visits = await vr.json();
+          const paths = req.site_photo_paths ? req.site_photo_paths.slice() : [];
+          const uids = req.site_visit_uids ? req.site_visit_uids.slice() : [];
+          for (const v of visits) {
+            (v.photo_paths || []).forEach(p => { if (!paths.includes(p)) paths.push(p); });
+            if (v.visit_uid && !uids.includes(v.visit_uid)) uids.push(v.visit_uid);
+            if (!req.gps && v.gps_text) req.gps = v.gps_text;
+            if (!req.gps && v.gps_lat != null) req.gps = v.gps_lat + ", " + v.gps_lng;
+          }
+          if (paths.length) {
+            req.site_photo_paths = paths;
+            req.site_visit_uids = uids;
+            if (!document.getElementById("gps").value && req.gps) {
+              document.getElementById("gps").value = req.gps;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    const r = await api("/api/pdf", {method: "POST", body: JSON.stringify(req)});
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(t || r.statusText);
+    }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "valuation_report.pdf";
+    a.click();
+    loadPdfRecords();
+    loadSiteVisits();
+    updateStats();
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
+
+function photoUrl(filename) {
+  if (!filename) return "";
+  const base = API || "";
+  return base + "/api/photos/" + encodeURIComponent(filename);
+}
+
+function useVisitInReport(visitUid) {
+  // Find visit from last loaded cache
+  const v = (window._lastSiteVisits || []).find(x => x.visit_uid === visitUid);
+  if (!v) {
+    alert("Visit not found. Click Refresh and try again.");
+    return;
+  }
+  // Fill report form
+  if (v.client_name) document.getElementById("clientName").value = v.client_name;
+  if (v.bank_name) {
+    const sel = document.getElementById("bankName");
+    if ([...sel.options].some(o => o.value === v.bank_name)) {
+      sel.value = v.bank_name;
+      onBankChange();
+    } else {
+      // custom bank name
+      let opt = [...sel.options].find(o => o.value === "Custom / Other");
+      if (opt) sel.value = "Custom / Other";
+    }
+  }
+  if (v.branch) document.getElementById("branch").value = v.branch;
+  const gps = v.gps_text || (v.gps_lat != null ? v.gps_lat + ", " + v.gps_lng : "");
+  if (gps) document.getElementById("gps").value = gps;
+
+  // Ensure at least one plot and set plot_no
+  if (plotCount === 0) addPlot();
+  const firstPlot = document.querySelector(".plot-card");
+  if (firstPlot) {
+    const plotInput = firstPlot.querySelector('[data-f="plot_no"]');
+    if (plotInput) plotInput.value = v.plot_no || "";
+    const plotGps = firstPlot.querySelector('[data-f="gps"]');
+    if (plotGps && gps) plotGps.value = gps;
+  }
+
+  // Remember which visit to attach when generating PDF
+  window._pendingVisitUids = [v.visit_uid];
+  window._pendingPhotoPaths = v.photo_paths || [];
+
+  switchTab("report");
+  alert("Field data loaded into Report Generation.\n\nPlot: " + (v.plot_no || "") +
+    "\nClient: " + (v.client_name || "") +
+    "\nGPS: " + (gps || "—") +
+    "\nPhotos: " + ((v.photo_paths || []).length) +
+    "\n\nFill remaining valuation fields, then Generate PDF.\nPhotos will be embedded automatically.");
+}
+
+async function loadSiteVisits() {
+  const box = document.getElementById("siteVisitsBox");
+  if (!box) return;
+  box.innerHTML = "Loading…";
+  try {
+    const plot = (document.getElementById("fieldFilterPlot") || {}).value || "";
+    const client = (document.getElementById("fieldFilterClient") || {}).value || "";
+    const qs = new URLSearchParams({ limit: "50" });
+    if (plot.trim()) qs.set("plot_no", plot.trim());
+    if (client.trim()) qs.set("client_name", client.trim());
+    const r = await api("/api/site-visits?" + qs.toString());
+    if (!r.ok) throw new Error("Failed");
+    const rows = await r.json();
+    window._lastSiteVisits = rows;
+    if (!rows.length) {
+      box.innerHTML = "<em>No site visits yet. Use the Mobile Field App on site to capture photo + GPS.</em>";
+      return;
+    }
+    let html = `<table class="data-table"><thead><tr>
+      <th>Photo</th><th>Plot</th><th>Client</th><th>Bank / Branch</th><th>GPS</th><th>Visited</th><th>Status</th><th></th>
+    </tr></thead><tbody>`;
+    rows.forEach(v => {
+      const gps = v.gps_text || (v.gps_lat != null ? Number(v.gps_lat).toFixed(5) + ", " + Number(v.gps_lng).toFixed(5) : "—");
+      const paths = v.photo_paths || [];
+      const n = paths.length;
+      let thumb = "—";
+      if (n) {
+        const src = photoUrl(paths[0]);
+        const links = paths.map((p, i) =>
+          `<a href="${photoUrl(p)}" target="_blank" style="margin-right:4px">#${i + 1}</a>`
+        ).join("");
+        thumb = `<a href="${src}" target="_blank"><img class="photo-thumb" src="${src}" alt="site" onerror="this.style.display='none'"/></a> ×${n}<div style="font-size:.7rem;margin-top:2px">${links}</div>`;
+      }
+      const used = v.used_in_report_id
+        ? `<span class="badge badge-used">Used · ${v.used_in_report_id}</span>`
+        : `<span class="badge badge-pending">Not used in report</span>`;
+      const uid = (v.visit_uid || "").replace(/'/g, "\\'");
+      html += `<tr>
+        <td>${thumb}</td>
+        <td><b>${v.plot_no}</b></td>
+        <td>${v.client_name}</td>
+        <td>${v.bank_name}<br/><span style="color:#718096">${v.branch}</span></td>
+        <td style="font-size:.78rem">${gps}</td>
+        <td style="font-size:.78rem">${(v.visited_at || v.created_at || "").slice(0, 19)}</td>
+        <td>${used}</td>
+        <td><button type="button" class="btn-gold btn-sm" onclick="useVisitInReport('${uid}')">Use in report</button></td>
+      </tr>`;
+    });
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<em>Could not load site visits. Check login / API URL.</em>";
+  }
+}
+
+async function loadPdfRecords() {
+  const box = document.getElementById("pdfRecordsBox");
+  if (!box) return;
+  box.innerHTML = "Loading…";
+  try {
+    const r = await api("/api/pdf-records");
+    if (!r.ok) throw new Error("Failed");
+    const rows = await r.json();
+    if (!rows.length) {
+      box.innerHTML = "<em>No PDF reports stored yet. Generate one from the Report Generation tab.</em>";
+      return;
+    }
+    let html = `<table class="data-table"><thead><tr>
+      <th>Report ID</th><th>Client</th><th>Plot(s)</th><th>Bank / Branch</th><th>FMV</th><th>Distress</th><th>Date</th><th></th>
+    </tr></thead><tbody>`;
+    rows.forEach(v => {
+      const dl = v.pdf_path
+        ? `<a class="btn-outline btn-sm" href="${API}/api/pdf-records/${v.report_id}/download" target="_blank">Download</a>`
+        : "—";
+      html += `<tr>
+        <td><b>${v.report_id}</b></td>
+        <td>${v.client_name || ""}</td>
+        <td>${v.plot_nos || ""}</td>
+        <td>${v.bank_name || ""}<br/><span style="color:#718096">${v.branch || ""}</span></td>
+        <td>${Number(v.total_fmv || 0).toLocaleString()}</td>
+        <td>${Number(v.total_distress || 0).toLocaleString()}</td>
+        <td style="font-size:.78rem">${(v.created_at || "").slice(0, 19)}</td>
+        <td>${dl}</td>
+      </tr>`;
+    });
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<em>Could not load PDF records.</em>";
+  }
+}
+
+async function loadHistory() {
+  const box = document.getElementById("historyBox");
+  if (!box) return;
+  box.innerHTML = "Loading…";
+  try {
+    const r = await api("/api/history");
+    if (!r.ok) throw new Error("Failed");
+    const rows = await r.json();
+    if (!rows.length) {
+      box.innerHTML = "<em>No valuation history yet.</em>";
+      return;
+    }
+    let html = `<table class="data-table"><thead><tr>
+      <th>ID</th><th>Client</th><th>Bank</th><th>Branch</th><th>Val. date</th><th>FMV</th><th>Distress</th><th>Created</th>
+    </tr></thead><tbody>`;
+    rows.forEach(v => {
+      html += `<tr>
+        <td>${v.id}</td>
+        <td>${v.client_name || ""}</td>
+        <td>${v.bank_name || ""}</td>
+        <td>${v.branch || ""}</td>
+        <td>${v.valuation_date || ""}</td>
+        <td>${Number(v.total_fmv || 0).toLocaleString()}</td>
+        <td>${Number(v.total_distress || 0).toLocaleString()}</td>
+        <td style="font-size:.78rem">${(v.created_at || "").slice(0, 19)}</td>
+      </tr>`;
+    });
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<em>Could not load history.</em>";
+  }
+}
+
+async function updateStats() {
+  try {
+    const [vr, pr] = await Promise.all([
+      api("/api/site-visits?limit=200"),
+      api("/api/pdf-records"),
+    ]);
+    const visits = vr.ok ? await vr.json() : [];
+    const pdfs = pr.ok ? await pr.json() : [];
+    const used = visits.filter(v => v.used_in_report_id).length;
+    document.getElementById("statVisits").textContent = visits.length;
+    document.getElementById("statPdfs").textContent = pdfs.length;
+    document.getElementById("statUsed").textContent = used;
+    document.getElementById("statPending").textContent = visits.length - used;
+  } catch (_) {}
+}
+
+// Auto-login if token
+(async () => {
+  if (!API) {
+    /* still allow UI */
+  }
+  if (token) {
+    try {
+      const r = await api("/api/me");
+      if (r.ok) {
+        const d = await r.json();
+        document.getElementById("userName").textContent = d.full_name || d.username;
+        document.getElementById("loginScreen").classList.add("hidden");
+        document.getElementById("app").classList.remove("hidden");
+        fixFieldAppLinks();
+        await loadBanks();
+        if (plotCount === 0) addPlot();
+        const t = new Date().toISOString().slice(0, 10);
+        document.getElementById("valDate").value = t;
+        document.getElementById("fieldVisit").value = t;
+        loadSiteVisits();
+        loadPdfRecords();
+        updateStats();
+        return;
+      }
+    } catch (_) {}
+    token = "";
+    localStorage.removeItem("val_token");
+  }
+})();
+</script>
+</body>
+</html>

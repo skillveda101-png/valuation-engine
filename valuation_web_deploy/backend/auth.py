@@ -480,3 +480,150 @@ def get_pdf_record(report_id: str):
     except Exception:
         d["site_visit_ids"] = []
     return d
+
+
+# ---------- Banks & branches (editable from frontend) ----------
+
+def ensure_banks_tables():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS banks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            mrv_pct REAL NOT NULL DEFAULT 0.70,
+            grv_pct REAL NOT NULL DEFAULT 0.30,
+            distress_factor REAL NOT NULL DEFAULT 0.80,
+            notes TEXT DEFAULT '',
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS branches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bank_name TEXT NOT NULL,
+            branch_name TEXT NOT NULL,
+            created_at TEXT,
+            UNIQUE(bank_name, branch_name)
+        )
+    """)
+    conn.commit()
+    # Seed defaults if empty
+    row = conn.execute("SELECT COUNT(*) AS c FROM banks").fetchone()
+    if row and row["c"] == 0:
+        defaults = [
+            ("Nabil Bank Limited", 0.70, 0.30, 0.80),
+            ("Laxmi Sunrise Bank Limited", 0.70, 0.30, 0.80),
+            ("Machhapuchhre Bank Limited", 0.70, 0.30, 0.80),
+            ("Global IME Bank Limited", 0.60, 0.40, 0.80),
+            ("NIC Asia Bank Limited", 0.70, 0.30, 0.75),
+            ("Prabhu Bank Limited", 0.60, 0.40, 0.80),
+            ("Custom / Other", 0.70, 0.30, 0.80),
+        ]
+        for name, m, g, d in defaults:
+            conn.execute(
+                "INSERT OR IGNORE INTO banks (name, mrv_pct, grv_pct, distress_factor, created_at) VALUES (?,?,?,?,?)",
+                (name, m, g, d, datetime.utcnow().isoformat() + "Z"),
+            )
+        conn.commit()
+    conn.close()
+
+
+def list_banks_db():
+    ensure_banks_tables()
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, name, mrv_pct, grv_pct, distress_factor, notes FROM banks ORDER BY name"
+    ).fetchall()]
+    conn.close()
+    return rows
+
+
+def get_bank_db(name: str):
+    ensure_banks_tables()
+    conn = get_db()
+    row = conn.execute("SELECT * FROM banks WHERE name = ?", (name,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_bank(name: str, mrv_pct: float, grv_pct: float, distress_factor: float, notes: str = ""):
+    ensure_banks_tables()
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Bank name is required")
+    # normalize percents: accept 70 or 0.70
+    if mrv_pct > 1.5:
+        mrv_pct = mrv_pct / 100.0
+    if grv_pct > 1.5:
+        grv_pct = grv_pct / 100.0
+    if distress_factor > 1.5:
+        distress_factor = distress_factor / 100.0
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM banks WHERE name = ?", (name,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE banks SET mrv_pct=?, grv_pct=?, distress_factor=?, notes=? WHERE name=?",
+            (mrv_pct, grv_pct, distress_factor, notes or "", name),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO banks (name, mrv_pct, grv_pct, distress_factor, notes, created_at) VALUES (?,?,?,?,?,?)",
+            (name, mrv_pct, grv_pct, distress_factor, notes or "", datetime.utcnow().isoformat() + "Z"),
+        )
+    conn.commit()
+    row = conn.execute("SELECT * FROM banks WHERE name = ?", (name,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def delete_bank(name: str):
+    ensure_banks_tables()
+    conn = get_db()
+    conn.execute("DELETE FROM banks WHERE name = ?", (name,))
+    conn.execute("DELETE FROM branches WHERE bank_name = ?", (name,))
+    conn.commit()
+    conn.close()
+
+
+def list_branches(bank_name: str = None):
+    ensure_banks_tables()
+    conn = get_db()
+    if bank_name:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, bank_name, branch_name FROM branches WHERE bank_name = ? ORDER BY branch_name",
+            (bank_name,),
+        ).fetchall()]
+    else:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, bank_name, branch_name FROM branches ORDER BY bank_name, branch_name"
+        ).fetchall()]
+    conn.close()
+    return rows
+
+
+def add_branch(bank_name: str, branch_name: str):
+    ensure_banks_tables()
+    bank_name = (bank_name or "").strip()
+    branch_name = (branch_name or "").strip()
+    if not bank_name or not branch_name:
+        raise ValueError("Bank and branch name are required")
+    conn = get_db()
+    conn.execute(
+        "INSERT OR IGNORE INTO branches (bank_name, branch_name, created_at) VALUES (?,?,?)",
+        (bank_name, branch_name, datetime.utcnow().isoformat() + "Z"),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, bank_name, branch_name FROM branches WHERE bank_name=? AND branch_name=?",
+        (bank_name, branch_name),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def delete_branch(branch_id: int):
+    ensure_banks_tables()
+    conn = get_db()
+    conn.execute("DELETE FROM branches WHERE id = ?", (branch_id,))
+    conn.commit()
+    conn.close()

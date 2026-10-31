@@ -13,11 +13,14 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.pdfgen import canvas
-from reportlab.graphics.shapes import Drawing, Circle, String, Line
+from reportlab.graphics.shapes import Drawing, Circle, String, Line, Rect, Polygon, Group
 from reportlab.graphics import renderPDF
 from io import BytesIO
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 import os
+import re
+import math
+import urllib.request
 
 GOLD = colors.HexColor("#C9A227")
 NAVY = colors.HexColor("#1a365d")
@@ -380,6 +383,338 @@ def valuator_response_page(story, st, data, req, client, summary, plots):
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
     ]))
     story.append(t)
+
+
+
+
+def _parse_gps(gps_text: str) -> Optional[Tuple[float, float]]:
+    """Parse 'lat, lng' or 'lat lng' into floats."""
+    if not gps_text:
+        return None
+    m = re.search(r"(-?\d{1,3}\.\d+)\s*[,\s]\s*(-?\d{1,3}\.\d+)", str(gps_text))
+    if not m:
+        return None
+    try:
+        lat, lng = float(m.group(1)), float(m.group(2))
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            return lat, lng
+    except Exception:
+        pass
+    return None
+
+
+def _deg2num(lat: float, lon: float, zoom: int):
+    n = 2.0 ** zoom
+    xtile = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return xtile, ytile
+
+
+def _fetch_osm_tile(z: int, x: int, y: int) -> Optional[bytes]:
+    url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "DynamicSolutionValuation/4.0 (location-plan)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = resp.read()
+            if data and len(data) > 200:
+                return data
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_static_map(lat: float, lng: float, zoom: int = 16, width: int = 640, height: int = 400) -> Optional[bytes]:
+    """
+    Build a Google Earth–style overview by stitching OpenStreetMap tiles
+    around the GPS point and drawing a red pin. No API key required.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+
+    tile_size = 256
+    # 3x3 tiles centered near point
+    cx, cy = _deg2num(lat, lng, zoom)
+    n = 2 ** zoom
+    tiles = []
+    for dy in (-1, 0, 1):
+        row = []
+        for dx in (-1, 0, 1):
+            tx = (cx + dx) % n
+            ty = cy + dy
+            if ty < 0 or ty >= n:
+                row.append(None)
+                continue
+            raw = _fetch_osm_tile(zoom, tx, ty)
+            if not raw:
+                row.append(None)
+                continue
+            try:
+                row.append(Image.open(BytesIO(raw)).convert("RGB"))
+            except Exception:
+                row.append(None)
+        tiles.append(row)
+
+    if not any(im for row in tiles for im in row if im is not None):
+        return None
+
+    mosaic = Image.new("RGB", (tile_size * 3, tile_size * 3), (232, 240, 232))
+    for j, row in enumerate(tiles):
+        for i, im in enumerate(row):
+            if im is not None:
+                mosaic.paste(im, (i * tile_size, j * tile_size))
+
+    # Pixel position of lat/lng within center tile, then offset by one tile
+    def latlon_to_pixel(la, lo, z):
+        nn = 2.0 ** z
+        x = (lo + 180.0) / 360.0 * nn * tile_size
+        la_r = math.radians(la)
+        y = (1.0 - math.asinh(math.tan(la_r)) / math.pi) / 2.0 * nn * tile_size
+        return x, y
+
+    px, py = latlon_to_pixel(lat, lng, zoom)
+    # origin of mosaic = (cx-1, cy-1) tile
+    origin_x = (cx - 1) * tile_size
+    origin_y = (cy - 1) * tile_size
+    pin_x = int(px - origin_x)
+    pin_y = int(py - origin_y)
+
+    draw = ImageDraw.Draw(mosaic)
+    r = 10
+    # pin shadow
+    draw.ellipse((pin_x - r + 2, pin_y - r + 2, pin_x + r + 2, pin_y + r + 2), fill=(0, 0, 0))
+    draw.ellipse((pin_x - r, pin_y - r, pin_x + r, pin_y + r), fill=(220, 38, 38), outline=(127, 29, 29), width=2)
+    draw.line((pin_x, pin_y, pin_x, pin_y + 18), fill=(185, 28, 28), width=3)
+    # label bar
+    label = f"{lat:.5f}, {lng:.5f}"
+    draw.rectangle((8, 8, 8 + 7 * len(label) + 16, 28), fill=(30, 58, 95))
+    try:
+        draw.text((14, 12), label, fill=(255, 255, 255))
+    except Exception:
+        pass
+
+    # crop/resize to requested size
+    out = mosaic.resize((width, height), Image.Resampling.LANCZOS)
+    buf = BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _static_map_flowable(lat: float, lng: float, max_w_mm: float = 170, max_h_mm: float = 95):
+    raw = _fetch_static_map(lat, lng)
+    if not raw:
+        return None
+    try:
+        from reportlab.lib.utils import ImageReader
+        bio = BytesIO(raw)
+        img = Image(bio)
+        iw, ih = img.imageWidth, img.imageHeight
+        if iw <= 0 or ih <= 0:
+            return None
+        scale = min((max_w_mm * mm) / iw, (max_h_mm * mm) / ih, 1.0)
+        img.drawWidth = iw * scale
+        img.drawHeight = ih * scale
+        return img
+    except Exception:
+        return None
+
+
+def make_location_plan_drawing(
+    plot: Dict[str, Any],
+    gps_text: str = "",
+    width: float = 480,
+    height: float = 320,
+) -> Drawing:
+    """
+    Schematic location plan inspired by map overview:
+    plot footprint, cardinal neighbours (charkilla), access road, landmarks, GPS, north arrow.
+    """
+    d = Drawing(width, height)
+    # Background (map-like)
+    d.add(Rect(0, 0, width, height, fillColor=colors.HexColor("#E8F0E8"), strokeColor=colors.HexColor("#94a3b8"), strokeWidth=1))
+    # Soft grid
+    for i in range(1, 8):
+        x = i * width / 8
+        d.add(Line(x, 0, x, height, strokeColor=colors.HexColor("#cbd5e0"), strokeWidth=0.3))
+    for j in range(1, 6):
+        y = j * height / 6
+        d.add(Line(0, y, width, y, strokeColor=colors.HexColor("#cbd5e0"), strokeWidth=0.3))
+
+    # Plot rectangle (center)
+    pw, ph = width * 0.38, height * 0.36
+    px, py = (width - pw) / 2, (height - ph) / 2 + 8
+    d.add(Rect(px, py, pw, ph, fillColor=colors.HexColor("#FEF3C7"), strokeColor=NAVY, strokeWidth=2))
+    d.add(String(px + pw / 2, py + ph / 2 + 6, "SUBJECT", fontName="Helvetica-Bold", fontSize=9, fillColor=NAVY, textAnchor="middle"))
+    plot_no = str(plot.get("plot_no") or "")
+    d.add(String(px + pw / 2, py + ph / 2 - 8, f"Plot {plot_no}", fontName="Helvetica", fontSize=8, fillColor=DARK, textAnchor="middle"))
+
+    # Cardinal labels from charkilla
+    east = (plot.get("east") or "East").strip() or "East"
+    west = (plot.get("west") or "West").strip() or "West"
+    north = (plot.get("north") or "North").strip() or "North"
+    south = (plot.get("south") or "South").strip() or "South"
+    # Truncate long labels
+    def trunc(s, n=28):
+        s = str(s)
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    d.add(String(width / 2, py + ph + 14, f"N: {trunc(north)}", fontName="Helvetica", fontSize=7, fillColor=DARK, textAnchor="middle"))
+    d.add(String(width / 2, py - 12, f"S: {trunc(south)}", fontName="Helvetica", fontSize=7, fillColor=DARK, textAnchor="middle"))
+    d.add(String(px + pw + 6, py + ph / 2, f"E: {trunc(east, 22)}", fontName="Helvetica", fontSize=7, fillColor=DARK, textAnchor="start"))
+    d.add(String(px - 6, py + ph / 2, f"W: {trunc(west, 22)}", fontName="Helvetica", fontSize=7, fillColor=DARK, textAnchor="end"))
+
+    # Access road — prefer side mentioned in road_width text
+    road = (plot.get("road_width") or plot.get("road_type") or "").strip()
+    road_ft = plot.get("road_width_ft") or 0
+    road_label = road or (f"{road_ft} ft road" if road_ft else "Access road")
+    road_low = road_label.lower()
+    # Draw road bar on likely side
+    if "east" in road_low:
+        d.add(Rect(px + pw + 2, py - 4, 14, ph + 8, fillColor=colors.HexColor("#94a3b8"), strokeColor=None, strokeWidth=0))
+    elif "west" in road_low:
+        d.add(Rect(px - 16, py - 4, 14, ph + 8, fillColor=colors.HexColor("#94a3b8"), strokeColor=None, strokeWidth=0))
+    elif "north" in road_low:
+        d.add(Rect(px - 4, py + ph + 2, pw + 8, 12, fillColor=colors.HexColor("#94a3b8"), strokeColor=None, strokeWidth=0))
+    else:
+        # default west/south-west access strip
+        d.add(Rect(px - 16, py - 4, 14, ph + 8, fillColor=colors.HexColor("#94a3b8"), strokeColor=None, strokeWidth=0))
+    d.add(String(12, 18, f"Road: {trunc(road_label, 40)}", fontName="Helvetica", fontSize=7, fillColor=DARK))
+
+    # Landmark & distance
+    landmark = (plot.get("nearest_landmark") or "").strip()
+    dist = (plot.get("distance_to_market") or "").strip()
+    frontage = (plot.get("frontage") or "").strip()
+    yinfo = height - 14
+    if landmark:
+        d.add(String(12, yinfo, f"Landmark: {trunc(landmark, 50)}", fontName="Helvetica", fontSize=7, fillColor=DARK))
+        yinfo -= 11
+    if dist:
+        d.add(String(12, yinfo, f"Distance / market: {trunc(dist, 45)}", fontName="Helvetica", fontSize=7, fillColor=DARK))
+        yinfo -= 11
+    if frontage:
+        d.add(String(12, yinfo, f"Frontage: {trunc(frontage, 40)}", fontName="Helvetica", fontSize=7, fillColor=DARK))
+
+    # GPS badge
+    if gps_text:
+        d.add(Rect(width - 150, height - 28, 140, 18, fillColor=colors.HexColor("#1e3a5f"), strokeColor=None, strokeWidth=0))
+        d.add(String(width - 80, height - 22, f"GPS {trunc(gps_text, 28)}", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.white, textAnchor="middle"))
+
+    # North arrow
+    nx, ny = width - 36, height - 55
+    d.add(Line(nx, ny - 18, nx, ny + 12, strokeColor=NAVY, strokeWidth=1.5))
+    d.add(Polygon([nx, ny + 16, nx - 5, ny + 6, nx + 5, ny + 6], fillColor=NAVY, strokeColor=NAVY, strokeWidth=0.5))
+    d.add(String(nx, ny - 28, "N", fontName="Helvetica-Bold", fontSize=9, fillColor=NAVY, textAnchor="middle"))
+
+    # Title strip
+    d.add(String(width / 2, 6, "LOCATION PLAN (schematic — not to cadastral scale)", fontName="Helvetica", fontSize=6.5, fillColor=colors.HexColor("#64748b"), textAnchor="middle"))
+    return d
+
+
+def build_location_plan_story(data: Dict[str, Any], st) -> List:
+    """Build flowables for Annex location plan: map + schematic + proximity table."""
+    from reportlab.platypus import KeepTogether
+    req = data.get("request") or {}
+    plots_req = req.get("plots") or []
+    plots_res = data.get("plots") or []
+    gps_global = (req.get("gps") or "").strip()
+    # Prefer first plot with detail
+    plot = plots_req[0] if plots_req else {}
+    # Merge result fields if needed
+    if plots_res and not plot.get("plot_no"):
+        plot = {**plot, **plots_res[0]}
+
+    # Per-plot GPS fallback
+    gps_text = gps_global or (plot.get("gps") or "")
+    if not gps_text:
+        for p in plots_req:
+            if p.get("gps"):
+                gps_text = p["gps"]
+                break
+
+    out: List = []
+    out.append(Paragraph("<b>Annex 2 — LOCATION PLAN &amp; SITE CONTEXT</b>", st["H2"]))
+    out.append(Paragraph(
+        "Map overview (OpenStreetMap) and schematic location plan showing GPS, access roads, "
+        "boundary context (charkilla) and proximity notes from field inspection.",
+        st["Words"],
+    ))
+    out.append(Spacer(1, 4))
+
+    coords = _parse_gps(gps_text)
+    if coords:
+        lat, lng = coords
+        out.append(Paragraph(
+            f"<b>GPS:</b> {lat:.6f}° N, {lng:.6f}° E &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"<b>Map source:</b> OpenStreetMap (field pin)",
+            st["Small"],
+        ))
+        map_img = _static_map_flowable(lat, lng)
+        if map_img:
+            out.append(Spacer(1, 3))
+            out.append(map_img)
+            out.append(Paragraph(
+                "<i>Aerial / street context map centered on site coordinates (Google Earth–style overview via OSM).</i>",
+                st["Words"],
+            ))
+        else:
+            out.append(Paragraph(
+                "<i>Live map image could not be retrieved at generation time; schematic plan below still applies. "
+                f"Verify coordinates in Google Earth: {lat:.6f}, {lng:.6f}</i>",
+                st["Words"],
+            ))
+    else:
+        out.append(Paragraph(
+            "<i>No GPS coordinate on file for this valuation. Schematic plan uses inspection notes only. "
+            "Capture GPS via Field App for map overlay on future reports.</i>",
+            st["Words"],
+        ))
+
+    out.append(Spacer(1, 6))
+    out.append(Paragraph("<b>Schematic location plan</b>", st["SectionTitle"]))
+    # One schematic per plot (max 2)
+    for i, p in enumerate(plots_req[:2]):
+        g = (p.get("gps") or gps_text or "")
+        drawing = make_location_plan_drawing(p, gps_text=g)
+        out.append(drawing)
+        out.append(Spacer(1, 4))
+
+    # Proximity / access table
+    rows = [["Plot", "Access / Road", "Frontage", "Distance / Market", "Nearest landmark", "GPS"]]
+    for p in plots_req:
+        rows.append([
+            str(p.get("plot_no") or "-"),
+            str(p.get("road_width") or p.get("road_type") or (f"{p.get('road_width_ft') or '-'} ft")),
+            str(p.get("frontage") or "-"),
+            str(p.get("distance_to_market") or "-"),
+            str(p.get("nearest_landmark") or "-"),
+            str(p.get("gps") or gps_text or "-"),
+        ])
+    t = Table(rows, colWidths=[22*mm, 38*mm, 28*mm, 32*mm, 38*mm, 32*mm])
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F7FAFC")),
+    ]))
+    out.append(Paragraph("<b>Proximity &amp; access summary</b>", st["SectionTitle"]))
+    out.append(t)
+    out.append(Spacer(1, 4))
+    out.append(Paragraph(
+        "Note: Schematic is indicative for valuation context and does not replace cadastral / survey maps. "
+        "Distances and landmarks are as stated during field inspection or client documents.",
+        st["Words"],
+    ))
+    return out
 
 
 def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
@@ -974,11 +1309,8 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     story.append(t)
     story.append(Spacer(1, 8))
-    story.append(Paragraph("<b>Annex 2 — DRAWINGS of Land & Site plan Map</b>", st["H2"]))
-    story.append(Paragraph(
-        "Cadastral / site plan drawings as provided by the client are kept in the office file and form part of this report.",
-        st["Words"],
-    ))
+    for flowable in build_location_plan_story(data, st):
+        story.append(flowable)
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Annex 3 — PHOTOGRAPHS</b>", st["H2"]))
     all_photos = _photo_paths_from_data(data)

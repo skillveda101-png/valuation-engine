@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#1a365d" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>DS Field Visit</title>
+<link rel="manifest" href="/manifest.json" />
+<style>
+:root {
+  --navy:#1a365d; --gold:#c9a227; --bg:#0f172a; --card:#1e293b;
+  --border:#334155; --text:#f1f5f9; --muted:#94a3b8; --ok:#22c55e; --err:#ef4444;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.hidden{display:none!important}
+header{background:var(--navy);padding:.75rem 1rem;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+header h1{margin:0;font-size:1.05rem}
+header .sub{font-size:.75rem;opacity:.85}
+.wrap{padding:1rem;max-width:480px;margin:0 auto;padding-bottom:5rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem}
+label{display:block;font-size:.78rem;font-weight:600;margin:.55rem 0 .2rem;color:var(--muted)}
+input,select,textarea{width:100%;padding:.65rem .75rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;background:#0f172a;color:var(--text)}
+input:focus,select:focus,textarea:focus{outline:2px solid #3b82f6;border-color:#3b82f6}
+.req::after{content:" *";color:var(--err)}
+.btn{cursor:pointer;border:none;border-radius:10px;padding:.75rem 1rem;font-weight:600;font-size:.95rem;width:100%;margin-top:.5rem}
+.btn-primary{background:var(--gold);color:#1a202c}
+.btn-navy{background:var(--navy);color:#fff;border:1px solid #2c5282}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-danger{background:#7f1d1d;color:#fecaca}
+.btn:disabled{opacity:.5}
+.gps-box{background:#0f172a;border-radius:10px;padding:.75rem;font-size:.85rem;margin-top:.5rem}
+.gps-box.ok{border:1px solid var(--ok)}
+.gps-box.err{border:1px solid var(--err)}
+.photos{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:.5rem}
+.photos img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--border)}
+.photo-actions{display:flex;gap:.5rem;margin-top:.5rem}
+.photo-actions .btn{margin:0;flex:1}
+.status{font-size:.8rem;padding:.5rem;border-radius:8px;margin-top:.5rem}
+.status.pending{background:#422006;color:#fbbf24}
+.status.synced{background:#14532d;color:#86efac}
+.status.fail{background:#450a0a;color:#fca5a5}
+.queue{font-size:.8rem;color:var(--muted)}
+#loginCard input{margin-bottom:.4rem}
+.fab{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);width:min(440px,calc(100% - 2rem));z-index:20}
+.hint{font-size:.72rem;color:var(--muted);margin-top:.2rem}
+.cam-input{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>DS Field Visit</h1>
+    <div class="sub" id="userLabel">Not logged in</div>
+  </div>
+  <button class="btn-outline btn" style="width:auto;padding:.4rem .7rem;font-size:.8rem;margin:0" id="logoutBtn" onclick="logout()">Logout</button>
+</header>
+
+<div class="wrap">
+  <!-- Login -->
+  <div class="card" id="loginCard">
+    <label>Username</label>
+    <input id="loginUser" autocomplete="username" value="admin" />
+    <label>Password</label>
+    <input id="loginPass" type="password" autocomplete="current-password" value="admin123" />
+    <div id="loginErr" class="status fail hidden"></div>
+    <button class="btn btn-primary" onclick="doLogin()">Login</button>
+    <p class="hint">Same login as the valuation web app. Works offline after first login (token stored).</p>
+  </div>
+
+  <!-- Form -->
+  <div id="formArea" class="hidden">
+    <div class="card">
+      <h2 style="margin:0 0 .5rem;font-size:1rem;color:var(--gold)">Site capture</h2>
+      <p class="hint">Only these fields are required. Capture GPS + at least one photo on site.</p>
+
+      <label class="req">Client name</label>
+      <input id="clientName" placeholder="Client full name" />
+
+      <label class="req">Plot No.</label>
+      <input id="plotNo" placeholder="e.g. 770" />
+
+      <label class="req">Bank</label>
+      <select id="bankName"></select>
+
+      <label class="req">Bank branch</label>
+      <input id="branch" placeholder="e.g. Kakarvitta" />
+
+      <label>Notes (optional)</label>
+      <textarea id="notes" rows="2" placeholder="Access, landmarks, etc."></textarea>
+
+      <label>GPS</label>
+      <div class="gps-box" id="gpsBox">Not captured yet</div>
+      <button class="btn btn-navy" type="button" onclick="captureGps()">📍 Capture GPS</button>
+      <p class="hint">Allow location when prompted. Accuracy shown after capture.</p>
+
+      <label class="req">Site photograph(s)</label>
+      <input type="file" id="camInput" class="cam-input" accept="image/*" capture="environment" multiple />
+      <div class="photo-actions">
+        <button class="btn btn-navy" type="button" onclick="document.getElementById('camInput').click()">📷 Take / Pick photo</button>
+        <button class="btn btn-outline" type="button" onclick="clearPhotos()">Clear</button>
+      </div>
+      <div class="photos" id="photoPreview"></div>
+      <p class="hint">At least 1 photo required. Max 6. Prefer outdoor / access road views.</p>
+    </div>
+
+    <div class="card">
+      <div class="queue" id="queueInfo">Offline queue: 0</div>
+      <div id="saveStatus"></div>
+      <button class="btn btn-primary" id="saveBtn" onclick="saveVisit()">Save &amp; sync</button>
+      <button class="btn btn-outline" style="margin-top:.4rem" onclick="syncQueue()">Sync pending now</button>
+      <p class="hint">If offline, visit is stored on this phone and auto-synced when online.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 .5rem;font-size:.95rem">Recent on this device</h3>
+      <div id="localList" class="queue">—</div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script>
+const API = (window.VALUATION_API_URL || "").replace(/\/$/, "");
+const TOKEN_KEY = "val_token";
+const QUEUE_KEY = "ds_field_queue";
+const USER_KEY = "ds_field_user";
+
+let token = localStorage.getItem(TOKEN_KEY) || "";
+let photosB64 = [];
+let gps = { lat: null, lng: null, accuracy: null, text: "" };
+
+function uid() {
+  return "V" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+
+function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (!(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
+  if (token) headers["Authorization"] = "Bearer " + token;
+  return fetch(API + path, Object.assign({}, opts, { headers }));
+}
+
+async function doLogin() {
+  const err = document.getElementById("loginErr");
+  err.classList.add("hidden");
+  try {
+    const r = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: document.getElementById("loginUser").value.trim(),
+        password: document.getElementById("loginPass").value,
+      }),
+    });
+    if (!r.ok) throw new Error("Login failed");
+    const d = await r.json();
+    token = d.access_token;
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(USER_KEY, d.full_name || d.username);
+    showApp();
+  } catch (e) {
+    err.textContent = e.message + (API ? " — check network / API" : " — set config.js");
+    err.classList.remove("hidden");
+  }
+}
+
+function logout() {
+  token = "";
+  localStorage.removeItem(TOKEN_KEY);
+  location.reload();
+}
+
+function showApp() {
+  document.getElementById("loginCard").classList.add("hidden");
+  document.getElementById("formArea").classList.remove("hidden");
+  document.getElementById("userLabel").textContent = localStorage.getItem(USER_KEY) || "Staff";
+  loadBanks();
+  refreshQueueUI();
+  renderLocalList();
+}
+
+async function loadBanks() {
+  const sel = document.getElementById("bankName");
+  let list = [];
+  try {
+    const r = await api("/api/banks");
+    if (r.ok) list = await r.json();
+  } catch {}
+  if (!list.length) {
+    list = [
+      { name: "Nabil Bank Limited" },
+      { name: "Global IME Bank Limited" },
+      { name: "NIC Asia Bank Limited" },
+      { name: "Laxmi Sunrise Bank Limited" },
+      { name: "Machhapuchhre Bank Limited" },
+      { name: "Prabhu Bank Limited" },
+      { name: "Custom / Other" },
+    ];
+  }
+  sel.innerHTML = list.map(b => `<option value="${b.name}">${b.name}</option>`).join("");
+}
+
+function captureGps() {
+  const box = document.getElementById("gpsBox");
+  box.className = "gps-box";
+  box.textContent = "Getting location…";
+  if (!navigator.geolocation) {
+    box.classList.add("err");
+    box.textContent = "Geolocation not supported on this device";
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      gps.lat = pos.coords.latitude;
+      gps.lng = pos.coords.longitude;
+      gps.accuracy = pos.coords.accuracy;
+      gps.text = gps.lat.toFixed(6) + ", " + gps.lng.toFixed(6);
+      box.classList.add("ok");
+      box.innerHTML = `<b>${gps.text}</b><br/>Accuracy ±${Math.round(gps.accuracy)} m`;
+    },
+    (err) => {
+      box.classList.add("err");
+      box.textContent = "GPS failed: " + (err.message || "permission denied");
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+  );
+}
+
+document.getElementById("camInput").addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files || []);
+  for (const f of files) {
+    if (photosB64.length >= 6) break;
+    const b64 = await fileToJpegB64(f);
+    if (b64) photosB64.push(b64);
+  }
+  e.target.value = "";
+  renderPhotos();
+});
+
+function fileToJpegB64(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1600;
+      let w = img.width, h = img.height;
+      if (w > max || h > max) {
+        const s = Math.min(max / w, max / h);
+        w = Math.round(w * s);
+        h = Math.round(h * s);
+      }
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+function renderPhotos() {
+  const el = document.getElementById("photoPreview");
+  el.innerHTML = photosB64.map((b, i) =>
+    `<img src="${b}" alt="photo ${i+1}" onclick="if(confirm('Remove?')){photosB64.splice(${i},1);renderPhotos()}" />`
+  ).join("");
+}
+
+function clearPhotos() {
+  photosB64 = [];
+  renderPhotos();
+}
+
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch { return []; }
+}
+function setQueue(q) {
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+  refreshQueueUI();
+  renderLocalList();
+}
+
+function refreshQueueUI() {
+  const q = getQueue();
+  const pending = q.filter(x => x.status !== "synced").length;
+  document.getElementById("queueInfo").textContent = "Offline / pending queue: " + pending;
+}
+
+function renderLocalList() {
+  const q = getQueue().slice(-8).reverse();
+  const el = document.getElementById("localList");
+  if (!q.length) { el.textContent = "No visits on this device yet."; return; }
+  el.innerHTML = q.map(v => {
+    const st = v.status === "synced" ? "synced" : (v.status === "fail" ? "fail" : "pending");
+    return `<div class="status ${st}" style="margin-bottom:.35rem">
+      ${v.plot_no} · ${v.client_name}<br/>
+      <span style="opacity:.8">${v.bank_name} / ${v.branch} · ${v.visited_at || ""} · ${st}</span>
+    </div>`;
+  }).join("");
+}
+
+function buildPayload() {
+  const client_name = document.getElementById("clientName").value.trim();
+  const plot_no = document.getElementById("plotNo").value.trim();
+  const bank_name = document.getElementById("bankName").value;
+  const branch = document.getElementById("branch").value.trim();
+  if (!client_name || !plot_no || !bank_name || !branch) {
+    throw new Error("Client, Plot No, Bank and Branch are required");
+  }
+  if (!photosB64.length) throw new Error("At least one photo is required");
+  return {
+    visit_uid: uid(),
+    client_name,
+    plot_no,
+    bank_name,
+    branch,
+    gps_lat: gps.lat,
+    gps_lng: gps.lng,
+    gps_accuracy: gps.accuracy,
+    gps_text: gps.text || "",
+    notes: document.getElementById("notes").value.trim(),
+    visited_at: new Date().toISOString(),
+    photos_b64: photosB64.slice(),
+    status: "pending",
+  };
+}
+
+async function postVisit(payload) {
+  const body = { ...payload };
+  delete body.status;
+  const r = await api("/api/site-visits", { method: "POST", body: JSON.stringify(body) });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || "Upload failed");
+  }
+  return r.json();
+}
+
+async function saveVisit() {
+  const status = document.getElementById("saveStatus");
+  const btn = document.getElementById("saveBtn");
+  status.innerHTML = "";
+  btn.disabled = true;
+  try {
+    const payload = buildPayload();
+    // Always queue locally first
+    const q = getQueue();
+    q.push(payload);
+    setQueue(q);
+
+    try {
+      await postVisit(payload);
+      payload.status = "synced";
+      // update last item
+      const q2 = getQueue();
+      const idx = q2.findIndex(x => x.visit_uid === payload.visit_uid);
+      if (idx >= 0) q2[idx].status = "synced";
+      setQueue(q2);
+      status.innerHTML = '<div class="status synced">Saved &amp; synced to server</div>';
+      // reset form photos / gps optional
+      photosB64 = [];
+      renderPhotos();
+      document.getElementById("notes").value = "";
+    } catch (e) {
+      status.innerHTML = '<div class="status pending">Saved offline. Will sync when online. (' + e.message + ')</div>';
+    }
+  } catch (e) {
+    status.innerHTML = '<div class="status fail">' + e.message + '</div>';
+  }
+  btn.disabled = false;
+  renderLocalList();
+}
+
+async function syncQueue() {
+  const status = document.getElementById("saveStatus");
+  const q = getQueue();
+  let ok = 0, fail = 0;
+  for (const item of q) {
+    if (item.status === "synced") continue;
+    try {
+      await postVisit(item);
+      item.status = "synced";
+      ok++;
+    } catch {
+      item.status = "fail";
+      fail++;
+    }
+  }
+  setQueue(q);
+  status.innerHTML = `<div class="status ${fail ? "pending" : "synced"}">Synced ${ok}, failed ${fail}</div>`;
+  renderLocalList();
+}
+
+window.addEventListener("online", () => { syncQueue(); });
+
+// PWA
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+// Auto-show if token present
+if (token) showApp();
+else document.getElementById("loginCard").classList.remove("hidden");
+</script>
+</body>
+</html>
