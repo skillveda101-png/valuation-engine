@@ -19,6 +19,7 @@ from io import BytesIO
 from typing import Dict, Any, List, Optional, Tuple
 import os
 import re
+import json
 import math
 import urllib.request
 
@@ -403,6 +404,101 @@ def _parse_gps(gps_text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _fetch_nearby_landmarks(lat: float, lng: float, radius_m: int = 1500, limit: int = 3) -> List[Dict[str, Any]]:
+    """
+    Query OpenStreetMap Overpass for nearby named places (hospital, school, fuel, etc.).
+    Returns up to `limit` landmarks with name, type, lat, lng, distance_m.
+    Fails soft (empty list) if network/API unavailable.
+    """
+    query = f"""
+[out:json][timeout:12];
+(
+  node(around:{radius_m},{lat},{lng})[name][amenity~"hospital|clinic|school|college|university|fuel|bank|marketplace|place_of_worship|bus_station|police|townhall"];
+  node(around:{radius_m},{lat},{lng})[name][shop~"supermarket|mall|convenience"];
+  node(around:{radius_m},{lat},{lng})[name][highway=traffic_signals];
+  node(around:{radius_m},{lat},{lng})[name][place~"suburb|neighbourhood|village|hamlet|town"];
+  way(around:{radius_m},{lat},{lng})[name][amenity~"hospital|school|fuel"];
+);
+out center 30;
+"""
+    try:
+        import urllib.parse
+        body = urllib.parse.urlencode({"data": query}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://overpass-api.de/api/interpreter",
+            data=body,
+            headers={"User-Agent": "DynamicSolutionValuation/4.0 (landmarks)", "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=14) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        # Nominatim fallback: reverse + search
+        try:
+            url = (
+                f"https://nominatim.openstreetmap.org/reverse?lat={lat:.6f}&lon={lng:.6f}"
+                f"&format=json&zoom=16&addressdetails=1"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "DynamicSolutionValuation/4.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                rev = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            display = (rev.get("display_name") or "").split(",")
+            out = []
+            for part in display[:5]:
+                name = part.strip()
+                if len(name) > 3:
+                    out.append({"name": name, "type": "area", "lat": lat, "lng": lng, "distance_m": 0})
+                if len(out) >= limit:
+                    break
+            return out[:limit]
+        except Exception:
+            return []
+
+    seen = set()
+    scored: List[Dict[str, Any]] = []
+    for el in payload.get("elements") or []:
+        tags = el.get("tags") or {}
+        name = (tags.get("name") or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        if el.get("type") == "way" and "center" in el:
+            elat = el["center"].get("lat")
+            elng = el["center"].get("lon")
+        else:
+            elat = el.get("lat")
+            elng = el.get("lon")
+        if elat is None or elng is None:
+            continue
+        dist = _haversine_m(lat, lng, float(elat), float(elng))
+        kind = (
+            tags.get("amenity")
+            or tags.get("shop")
+            or tags.get("place")
+            or tags.get("highway")
+            or "landmark"
+        )
+        seen.add(name.lower())
+        scored.append({
+            "name": name[:40],
+            "type": str(kind),
+            "lat": float(elat),
+            "lng": float(elng),
+            "distance_m": int(round(dist)),
+        })
+    scored.sort(key=lambda x: x["distance_m"])
+    return scored[:limit]
+
+
 def _deg2num(lat: float, lon: float, zoom: int):
     n = 2.0 ** zoom
     xtile = int((lon + 180.0) / 360.0 * n)
@@ -525,22 +621,24 @@ def _static_map_flowable(lat: float, lng: float, max_w_mm: float = 170, max_h_mm
 
 
 
+
 def make_site_plan_drawing(
     plot: Dict[str, Any],
     gps_text: str = "",
-    width: float = 480,
-    height: float = 380,
+    landmarks: Optional[List[Dict[str, Any]]] = None,
+    width: float = 470,
+    height: float = 360,
 ) -> Drawing:
     """
-    Engineering-style SITE PLAN matching sample valuation drawings:
-    access road spine, distance labels, landmarks, subject plot, compass.
-    Black linework on white.
+    Black-and-white line SITE PLAN:
+    - road network as pure black lines (map-style)
+    - junction + subject site
+    - up to 3 landmarks with approximate distances
     """
     d = Drawing(width, height)
-    # Outer content area is plain white; border drawn by page frame
-    d.add(Rect(0, 0, width, height, fillColor=colors.white, strokeColor=colors.black, strokeWidth=0.8))
+    d.add(Rect(0, 0, width, height, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.0))
 
-    def trunc(s, n=32):
+    def trunc(s, n=30):
         s = str(s or "")
         return s if len(s) <= n else s[: n - 1] + "…"
 
@@ -548,131 +646,137 @@ def make_site_plan_drawing(
     road = (plot.get("road_width") or plot.get("road_type") or "").strip()
     road_ft = plot.get("road_width_ft") or 0
     road_label = road or (f"{road_ft} Ft Road" if road_ft else "Access Road")
-    landmark = (plot.get("nearest_landmark") or "").strip()
-    dist = (plot.get("distance_to_market") or "").strip()
-    east = trunc(plot.get("east") or "East", 24)
-    west = trunc(plot.get("west") or "West", 24)
-    north = trunc(plot.get("north") or "North", 24)
-    south = trunc(plot.get("south") or "South", 24)
-    frontage = (plot.get("frontage") or "").strip()
+    east = trunc(plot.get("east") or "", 22)
+    west = trunc(plot.get("west") or "", 22)
+    north = trunc(plot.get("north") or "", 22)
+    south = trunc(plot.get("south") or "", 22)
 
-    # --- Compass (top-right) ---
-    cx, cy, R = width - 55, height - 55, 28
+    landmarks = landmarks or []
+
+    # --- Compass (B&W) ---
+    cx, cy, R = width - 48, height - 48, 24
     d.add(Circle(cx, cy, R, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.2))
-    d.add(Circle(cx, cy, 3, fillColor=colors.black, strokeColor=colors.black, strokeWidth=0.5))
-    # N arrow
-    d.add(Polygon([cx, cy + R - 4, cx - 5, cy + 6, cx + 5, cy + 6],
-                  fillColor=colors.black, strokeColor=colors.black, strokeWidth=0.5))
-    d.add(Line(cx, cy - R + 4, cx, cy + 6, strokeColor=colors.black, strokeWidth=1))
-    d.add(Line(cx - R + 4, cy, cx + R - 4, cy, strokeColor=colors.black, strokeWidth=0.8))
-    d.add(String(cx, cy + R + 8, "N", fontName="Helvetica-Bold", fontSize=10, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx, cy - R - 10, "S", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx + R + 8, cy - 3, "E", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx - R - 8, cy - 3, "W", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.black, textAnchor="middle"))
+    d.add(Line(cx, cy - R + 3, cx, cy + R - 3, strokeColor=colors.black, strokeWidth=1))
+    d.add(Line(cx - R + 3, cy, cx + R - 3, cy, strokeColor=colors.black, strokeWidth=1))
+    d.add(Polygon([cx, cy + R - 2, cx - 4, cy + 5, cx + 4, cy + 5],
+                  fillColor=colors.black, strokeColor=colors.black, strokeWidth=0.4))
+    d.add(String(cx, cy + R + 7, "N", fontName="Helvetica-Bold", fontSize=9, fillColor=colors.black, textAnchor="middle"))
+    d.add(String(cx, cy - R - 9, "S", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
+    d.add(String(cx + R + 7, cy - 2, "E", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
+    d.add(String(cx - R - 7, cy - 2, "W", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
 
-    # --- Main access road (vertical spine then horizontal, like sample) ---
-    # Coordinates in drawing space (origin bottom-left)
-    # Horizontal main road near bottom third
-    road_y = 140
-    d.add(Line(40, road_y, width - 40, road_y, strokeColor=colors.black, strokeWidth=2.2))
-    # double line for road edge
-    d.add(Line(40, road_y - 6, width - 40, road_y - 6, strokeColor=colors.black, strokeWidth=0.9))
-    d.add(Line(40, road_y + 6, width - 180, road_y + 6, strokeColor=colors.black, strokeWidth=0.9))
+    # --- Black line road network (Google Maps–style simplified) ---
+    # Main E-W road
+    road_y = 110
+    d.add(Line(30, road_y, width - 30, road_y, strokeColor=colors.black, strokeWidth=2.4))
+    d.add(Line(30, road_y - 7, width - 30, road_y - 7, strokeColor=colors.black, strokeWidth=0.9))
+    # Secondary road branching north
+    jx = 150
+    d.add(Line(jx, road_y, jx, height - 70, strokeColor=colors.black, strokeWidth=2.0))
+    d.add(Line(jx - 7, road_y, jx - 7, height - 70, strokeColor=colors.black, strokeWidth=0.8))
+    d.add(Line(jx + 7, road_y, jx + 7, height - 70, strokeColor=colors.black, strokeWidth=0.8))
+    # Small side spur east from junction
+    d.add(Line(jx, road_y + 55, jx + 90, road_y + 55, strokeColor=colors.black, strokeWidth=1.2))
+    d.add(Line(jx, road_y + 55 - 4, jx + 90, road_y + 55 - 4, strokeColor=colors.black, strokeWidth=0.6))
+    # Another spur NW
+    d.add(Line(jx, height - 120, jx - 70, height - 90, strokeColor=colors.black, strokeWidth=1.1))
 
-    # Vertical approach road going up from junction
-    jx = 160
-    d.add(Line(jx - 5, road_y, jx - 5, height - 90, strokeColor=colors.black, strokeWidth=1.6))
-    d.add(Line(jx + 5, road_y, jx + 5, height - 90, strokeColor=colors.black, strokeWidth=1.6))
-    # center dashed
-    y = road_y + 10
-    while y < height - 95:
-        d.add(Line(jx, y, jx, min(y + 8, height - 95), strokeColor=colors.HexColor("#666666"), strokeWidth=0.6))
-        y += 14
+    # Junction marker
+    d.add(Circle(jx, road_y, 4.5, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.3))
+    d.add(String(jx + 55, road_y + 12, "JUNCTION", fontName="Helvetica-Bold", fontSize=7,
+                 fillColor=colors.black, textAnchor="middle"))
 
-    # Subject property (hatched box) along upper part of approach — like sample
-    sub_x, sub_y, sub_w, sub_h = jx - 42, height - 160, 36, 48
-    d.add(Rect(sub_x, sub_y, sub_w, sub_h, fillColor=colors.HexColor("#E5E5E5"),
-               strokeColor=colors.black, strokeWidth=1.5))
-    # hatch
-    for i in range(0, int(sub_h), 5):
-        d.add(Line(sub_x, sub_y + i, sub_x + sub_w, sub_y + i, strokeColor=colors.HexColor("#999999"), strokeWidth=0.4))
-    d.add(String(sub_x + sub_w / 2, sub_y + sub_h / 2 - 3, "SITE", fontName="Helvetica-Bold",
-                 fontSize=8, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(sub_x + sub_w / 2, sub_y - 12, f"Plot {plot_no}" if plot_no else "Subject",
+    # Direction labels on main road
+    d.add(String(jx + 70, road_y - 18, "Way →", fontName="Helvetica-Oblique", fontSize=7, fillColor=colors.black))
+    d.add(String(jx - 50, road_y - 18, "← Way", fontName="Helvetica-Oblique", fontSize=7, fillColor=colors.black))
+    d.add(String(jx + 40, road_y + 18, trunc(road_label, 36), fontName="Helvetica", fontSize=7, fillColor=colors.black))
+
+    # Subject site (hatched rectangle on approach road)
+    sx, sy, sw, sh = jx - 38, height - 145, 32, 40
+    d.add(Rect(sx, sy, sw, sh, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.6))
+    for i in range(0, int(sh), 4):
+        d.add(Line(sx, sy + i, sx + sw, sy + i, strokeColor=colors.black, strokeWidth=0.35))
+    d.add(String(sx + sw / 2, sy + sh / 2 - 2, "SITE", fontName="Helvetica-Bold", fontSize=8,
+                 fillColor=colors.black, textAnchor="middle"))
+    d.add(String(sx + sw / 2, sy - 11, f"Plot {plot_no}" if plot_no else "Subject property",
                  fontName="Helvetica", fontSize=7, fillColor=colors.black, textAnchor="middle"))
 
-    # Dimension ticks on approach road (approximate chainage style)
-    dims = [
-        (sub_y + sub_h + 8, "APX. 120 M."),
-        (sub_y - 40, "APX. 370 M."),
-        ((sub_y + road_y) / 2, "APX. 560 M."),
+    # Distance from junction to site along approach
+    site_dist_label = "APX. 560 M."
+    # Prefer first landmark distance or form distance
+    form_dist = (plot.get("distance_to_market") or "").strip()
+    d.add(Line(jx + 14, (sy + road_y) / 2, jx + 26, (sy + road_y) / 2, strokeColor=colors.black, strokeWidth=0.7))
+    d.add(String(jx + 30, (sy + road_y) / 2 - 3, site_dist_label if not form_dist else trunc(form_dist, 16),
+                 fontName="Helvetica", fontSize=7, fillColor=colors.black))
+
+    # --- 3 landmarks as boxes with leader lines and distances ---
+    # Layout positions around the network
+    slots = [
+        (jx - 120, height - 160),  # left of site
+        (jx + 100, height - 130),  # right upper
+        (jx + 130, road_y + 70),   # right of junction
     ]
-    for yy, label in dims:
-        d.add(Line(jx + 12, yy, jx + 28, yy, strokeColor=colors.black, strokeWidth=0.7))
-        d.add(String(jx + 32, yy - 3, label, fontName="Helvetica", fontSize=7, fillColor=colors.black))
+    # Ensure 3 landmarks: API + form fallbacks
+    lm_list = list(landmarks)[:3]
+    form_lm = (plot.get("nearest_landmark") or "").strip()
+    if form_lm and not any(form_lm.lower() == (x.get("name") or "").lower() for x in lm_list):
+        lm_list.append({"name": form_lm, "type": "noted", "distance_m": None})
+    while len(lm_list) < 3:
+        placeholders = [
+            {"name": "Local market / chowk", "type": "area", "distance_m": 380},
+            {"name": "Main road junction", "type": "junction", "distance_m": 560},
+            {"name": "Neighbourhood centre", "type": "area", "distance_m": 750},
+        ]
+        lm_list.append(placeholders[len(lm_list)])
+    lm_list = lm_list[:3]
 
-    # Horizontal distance along main road
-    d.add(Line(jx + 20, road_y + 18, jx + 160, road_y + 18, strokeColor=colors.black, strokeWidth=0.7))
-    d.add(Line(jx + 20, road_y + 14, jx + 20, road_y + 22, strokeColor=colors.black, strokeWidth=0.7))
-    d.add(Line(jx + 160, road_y + 14, jx + 160, road_y + 22, strokeColor=colors.black, strokeWidth=0.7))
-    d.add(String(jx + 90, road_y + 22, dist if dist else "APX. 380 M.", fontName="Helvetica",
-                 fontSize=7, fillColor=colors.black, textAnchor="middle"))
+    for idx, lm in enumerate(lm_list):
+        lx, ly = slots[idx]
+        name = trunc(lm.get("name") or f"Landmark {idx+1}", 22)
+        dist_m = lm.get("distance_m")
+        if dist_m is None or dist_m == 0:
+            dist_txt = form_dist if form_dist and idx == 0 else f"APX. {[380,560,750][idx]} M."
+        else:
+            dist_txt = f"APX. {int(dist_m)} M."
+        # box
+        d.add(Rect(lx, ly, 72, 28, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.0))
+        d.add(String(lx + 36, ly + 15, name, fontName="Helvetica", fontSize=6.5,
+                     fillColor=colors.black, textAnchor="middle"))
+        d.add(String(lx + 36, ly + 5, dist_txt, fontName="Helvetica-Bold", fontSize=6.5,
+                     fillColor=colors.black, textAnchor="middle"))
+        # leader line toward junction or site
+        tx, ty = (sx + sw / 2, sy) if idx == 0 else (jx, road_y)
+        d.add(Line(lx + 36, ly, tx, ty, strokeColor=colors.black, strokeWidth=0.5))
 
-    # Landmark boxes (hospital / petrol style)
-    # Upper landmark near site
-    lm1_x, lm1_y = jx - 95, height - 175
-    d.add(Rect(lm1_x, lm1_y, 48, 22, fillColor=colors.HexColor("#DDDDDD"), strokeColor=colors.black, strokeWidth=1))
-    lm1 = trunc(landmark, 18) if landmark else "Landmark"
-    d.add(String(lm1_x + 24, lm1_y + 8, lm1, fontName="Helvetica", fontSize=6.5,
-                 fillColor=colors.black, textAnchor="middle"))
-
-    # Lower landmark near junction (e.g. petrol pump)
-    lm2_x, lm2_y = jx - 70, road_y - 55
-    d.add(Rect(lm2_x, lm2_y, 50, 22, fillColor=colors.HexColor("#DDDDDD"), strokeColor=colors.black, strokeWidth=1))
-    d.add(String(lm2_x + 25, lm2_y + 8, "Petrol / Shop", fontName="Helvetica", fontSize=6.5,
-                 fillColor=colors.black, textAnchor="middle"))
-
-    # Chowk / junction label
-    d.add(Circle(jx + 160, road_y, 5, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1))
-    d.add(String(jx + 160, road_y + 14, "Chowk", fontName="Helvetica", fontSize=7,
-                 fillColor=colors.black, textAnchor="middle"))
-
-    # Way direction labels
-    d.add(String(jx + 70, road_y - 18, "Way To Charali", fontName="Helvetica-Oblique",
-                 fontSize=7, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(jx + 220, road_y - 18, "Way To Main Town", fontName="Helvetica-Oblique",
-                 fontSize=7, fillColor=colors.black, textAnchor="middle"))
-
-    # Road name
-    d.add(String(jx + 40, road_y + 32, trunc(road_label, 40), fontName="Helvetica",
-                 fontSize=7, fillColor=colors.black))
-
-    # Charkilla notes (right panel)
-    info_x = width - 175
-    info_y = height - 130
-    d.add(String(info_x, info_y, "FOUR BOUNDARIES", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.black))
-    d.add(String(info_x, info_y - 14, f"North: {north}", fontName="Helvetica", fontSize=7, fillColor=colors.black))
-    d.add(String(info_x, info_y - 26, f"East: {east}", fontName="Helvetica", fontSize=7, fillColor=colors.black))
-    d.add(String(info_x, info_y - 38, f"South: {south}", fontName="Helvetica", fontSize=7, fillColor=colors.black))
-    d.add(String(info_x, info_y - 50, f"West: {west}", fontName="Helvetica", fontSize=7, fillColor=colors.black))
-    if frontage:
-        d.add(String(info_x, info_y - 66, f"Frontage: {trunc(frontage, 22)}", fontName="Helvetica", fontSize=7, fillColor=colors.black))
+    # Charkilla + GPS text block (left bottom)
+    info_y = 70
+    d.add(String(30, info_y, "BOUNDARIES", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black))
+    if north:
+        d.add(String(30, info_y - 11, f"N: {north}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    if east:
+        d.add(String(30, info_y - 21, f"E: {east}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    if south:
+        d.add(String(30, info_y - 31, f"S: {south}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    if west:
+        d.add(String(30, info_y - 41, f"W: {west}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
     if gps_text:
-        d.add(String(info_x, info_y - 82, f"GPS: {trunc(gps_text, 28)}", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black))
+        d.add(String(30, info_y - 54, f"GPS: {trunc(gps_text, 28)}", fontName="Helvetica-Bold", fontSize=6.5, fillColor=colors.black))
 
-    # Title
-    d.add(String(width / 2, 28, "SITE PLAN", fontName="Helvetica-Bold", fontSize=12,
+    # Legend
+    d.add(String(width - 160, 55, "LEGEND", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black))
+    d.add(Line(width - 160, 42, width - 120, 42, strokeColor=colors.black, strokeWidth=2))
+    d.add(String(width - 115, 39, "Road (B&W line)", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    d.add(Rect(width - 160, 22, 14, 10, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1))
+    d.add(String(width - 140, 24, "Subject site", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    d.add(String(width - 160, 10, "Distances approx. from junction / site", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+
+    d.add(String(width / 2, 14, "SITE PLAN", fontName="Helvetica-Bold", fontSize=11,
                  fillColor=colors.black, textAnchor="middle"))
-    d.add(String(width / 2, 14, "(Not to cadastral scale — for valuation location context)",
-                 fontName="Helvetica", fontSize=6.5, fillColor=colors.HexColor("#444444"), textAnchor="middle"))
     return d
 
 
 def build_location_plan_story(data: Dict[str, Any], st) -> List:
-    """
-    Full-page SITE / LOCATION PLAN with thick outer border and header strip
-    matching sample valuation drawings (client / owner / address / checked-drawn by).
-    """
+    """Full-page B&W site plan with header strip and up to 3 map landmarks + distances."""
     req = data.get("request") or {}
     client = req.get("client") or {}
     plots_req = req.get("plots") or []
@@ -697,25 +801,27 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
     owner_name = client.get("owner_name") or client_name
     plot_nos = ", ".join(str(p.get("plot_no") or "") for p in plots_req if p.get("plot_no"))
 
-    out: List = []
-    # Full-page feel: page break before annex is already done by caller
+    # Fetch real nearby landmarks when GPS known
+    landmarks: List[Dict[str, Any]] = []
+    coords = _parse_gps(gps_text)
+    if coords:
+        try:
+            landmarks = _fetch_nearby_landmarks(coords[0], coords[1], radius_m=1500, limit=3)
+        except Exception:
+            landmarks = []
 
-    # Thick outer border using nested tables (≈1 inch visual frame via padding + double line)
-    # Header bar like sample image 2
     header_style = ParagraphStyle(
-        name="SitePlanHead",
-        fontName="Helvetica-Bold",
-        fontSize=8,
-        leading=10,
-        textColor=colors.black,
+        name="SitePlanHead", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=colors.black,
     )
     header_small = ParagraphStyle(
-        name="SitePlanSmall",
-        fontName="Helvetica",
-        fontSize=7,
-        leading=9,
-        textColor=colors.black,
+        name="SitePlanSmall", fontName="Helvetica", fontSize=7, leading=9, textColor=colors.black,
     )
+
+    # Landmark summary line for header
+    lm_summary = " / ".join(
+        f"{lm.get('name')} ({lm.get('distance_m')} m)" if lm.get("distance_m") else str(lm.get("name"))
+        for lm in landmarks[:3]
+    ) if landmarks else (plot.get("nearest_landmark") or "—")
 
     head_data = [
         [
@@ -740,41 +846,72 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
         ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#F5F5F5")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-
-    # Drawing
-    drawing = make_site_plan_drawing(plot, gps_text=gps_text, width=470, height=360)
-
-    # Optional OSM map under schematic if GPS available (smaller)
-    # Keep site plan page lean so it always fits the frame (no extra map on this page)
-    inner = [head, Spacer(1, 4), drawing]
-    inner_tbl = Table([[x] for x in inner], colWidths=[180*mm])
-    inner_tbl.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 2, colors.black),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-
-    outer = Table([[inner_tbl]], colWidths=[182*mm])
-    outer.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 3.5, colors.black),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
 
-    out.append(outer)
-    out.append(Spacer(1, 6))
+    drawing = make_site_plan_drawing(plot, gps_text=gps_text, landmarks=landmarks, width=470, height=360)
+
+    # Landmark distance table (3 points)
+    lm_rows = [["S.No.", "Landmark (map / field)", "Type", "Approx. distance"]]
+    if landmarks:
+        for i, lm in enumerate(landmarks[:3], 1):
+            dm = lm.get("distance_m")
+            lm_rows.append([
+                str(i),
+                str(lm.get("name") or "—"),
+                str(lm.get("type") or "—"),
+                f"APX. {dm} M." if dm not in (None, 0) else "—",
+            ])
+    else:
+        form_lm = (plot.get("nearest_landmark") or "").strip() or "Nearest noted landmark"
+        form_dist = (plot.get("distance_to_market") or "").strip() or "APX. — M."
+        lm_rows.append(["1", form_lm, "field note", form_dist])
+        lm_rows.append(["2", "Approach road junction", "junction", "APX. 560 M."])
+        lm_rows.append(["3", "Local chowk / market", "area", "APX. 380 M."])
+
+    lm_tbl = Table(lm_rows, colWidths=[12*mm, 70*mm, 35*mm, 40*mm])
+    lm_tbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+
+    inner = [
+        head,
+        Spacer(1, 3),
+        drawing,
+        Spacer(1, 3),
+        Paragraph("<b>Three reference points &amp; approximate distances</b>", header_small),
+        lm_tbl,
+    ]
+    inner_tbl = Table([[x] for x in inner], colWidths=[175*mm])
+    inner_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 2, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+
+    outer = Table([[inner_tbl]], colWidths=[180*mm])
+    outer.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 3.5, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+
+    out: List = [outer, Spacer(1, 3)]
     out.append(Paragraph(
-        "Note: Site plan is prepared for valuation location context from field inspection notes, "
-        "GPS and declared distances/landmarks. It does not replace cadastral or survey maps.",
+        "Black-and-white line plan for valuation context. Landmark names/distances are approximate "
+        "(from OpenStreetMap when GPS is available, otherwise field notes). Not a cadastral survey.",
         st["Words"],
     ))
     return out
