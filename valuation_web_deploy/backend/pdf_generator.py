@@ -290,10 +290,27 @@ def area_table(pout, st):
 
 
 def add_page_number(canvas, doc):
+    """Footer + authenticity QR on every page."""
     canvas.saveState()
     canvas.setFont("Helvetica", 7)
     canvas.setFillColor(colors.grey)
-    canvas.drawCentredString(A4[0] / 2, 8 * mm, f"DYNAMIC SOLUTION PVT. LTD.    |    Page {doc.page}")
+    canvas.drawCentredString(A4[0] / 2, 8 * mm, f"DYNAMIC SOLUTION PVT. LTD.    |    Page {doc.page}    |    Scan QR to verify")
+    # Small QR bottom-right for authenticity
+    verify = getattr(doc, "verify_url", None) or "https://dynamicsolution.np/verify"
+    try:
+        import qrcode
+        from reportlab.lib.utils import ImageReader
+        from io import BytesIO as _B
+        qr = qrcode.QRCode(version=2, box_size=3, border=1)
+        qr.add_data(verify)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = _B()
+        img.save(bio, format="PNG")
+        bio.seek(0)
+        canvas.drawImage(ImageReader(bio), A4[0] - 22 * mm, 10 * mm, 14 * mm, 14 * mm, mask="auto")
+    except Exception:
+        pass
     canvas.restoreState()
 
 
@@ -1000,6 +1017,11 @@ def _generate_bank_valuation_pdf(data: Dict[str, Any]) -> bytes:
         leftMargin=12*mm, rightMargin=12*mm,
         topMargin=10*mm, bottomMargin=14*mm
     )
+
+    try:
+        doc.verify_url = (data.get("verify_url") or "https://dynamicsolution.np/verify")
+    except Exception:
+        doc.verify_url = "https://dynamicsolution.np/verify"
     st = styles()
     story = []
     logo = make_logo_flowable(24)
@@ -1018,9 +1040,48 @@ def _generate_bank_valuation_pdf(data: Dict[str, Any]) -> bytes:
     prop_type = "Land & Building" if data["building"]["fmv"] > 0 else "Land"
     plot_nos = " & ".join(p["plot_no"] for p in plots) if len(plots) > 1 else plots[0]["plot_no"]
 
-    # ========== 1. COVER ==========
+    # ========== 1. COVER (attractive first page) ==========
+    header_tbl = Table([
+        [logo, Paragraph(
+            f"<b>{firm.get('firm_name') or 'DYNAMIC SOLUTION PVT. LTD.'}</b><br/>"
+            f"<font size='8'>{firm.get('firm_address') or ''}</font><br/>"
+            f"<font size='8'>PAN {firm.get('firm_pan') or ''} · Reg {firm.get('firm_reg_no') or ''}</font>",
+            st["Body"]), qr or ""]
+    ], colWidths=[28*mm, 120*mm, 30*mm])
+    header_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 1.5, colors.HexColor("#1a365d")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7FAFC")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(header_tbl)
+    story.append(Spacer(1, 6))
     story.append(Paragraph("REPORT OF PROPERTY VALUATION OF FIXED ASSETS", st["MainTitle"]))
-    story.append(Spacer(1, 3))
+    story.append(Paragraph(
+        f"<b>{prop_type}</b> · Plot {plot_nos} · <b>{req.get('bank_name') or ''}</b> ({req.get('branch') or ''})",
+        st["SectionTitle"]))
+    # Highlight FMV / DV strip
+    strip = Table([[
+        Paragraph(f"<b>Fair Market Value</b><br/><font size='12'>NRs. {summary.get('total_fmv', 0):,}</font>", st["Body"]),
+        Paragraph(f"<b>Distress Value</b><br/><font size='12'>NRs. {summary.get('total_distress', 0):,}</font>", st["Body"]),
+        Paragraph(f"<b>Valuation Date</b><br/>{req.get('valuation_date') or '—'}", st["Body"]),
+    ]], colWidths=[60*mm, 60*mm, 60*mm])
+    strip.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#E6F4EA")),
+        ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#FCE8E6")),
+        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#E8F0FE")),
+        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#1a365d")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E0")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(strip)
+    story.append(Spacer(1, 6))
     story.append(section_bar("CLIENT", st))
     story.append(kv([
         ["Name", client["client_name"]],
@@ -1681,6 +1742,11 @@ def generate_sahakari_valuation_pdf(data: Dict[str, Any]) -> bytes:
         topMargin=12*mm, bottomMargin=14*mm,
         title="Valuation Report of Fixed Assets",
     )
+
+    try:
+        doc.verify_url = (data.get("verify_url") or "https://dynamicsolution.np/verify")
+    except Exception:
+        doc.verify_url = "https://dynamicsolution.np/verify"
     story = []
 
     def H(txt):
@@ -1983,11 +2049,37 @@ def generate_sahakari_valuation_pdf(data: Dict[str, Any]) -> bytes:
         S(8)
 
     if bldg_fmv:
-        H("Building Valuation (summary)")
-        story.append(kv([
-            ["Fair Market Value of Building", f"NRs. {fmt(bldg_fmv)}"],
-            ["Distress Value of Building", f"NRs. {fmt(bldg_dv)}"],
-        ], c1=70*mm, c2=110*mm))
+        H("Building Valuation")
+        det = (data.get("building") or {}).get("details") or {}
+        floors = det.get("floors") or []
+        if floors:
+            brows = [["Floor", "Area", "Unit", "Area (Sft)", "Rate/unit", "Value (NRs)"]]
+            for fl in floors:
+                brows.append([
+                    fl.get("name") or "",
+                    str(fl.get("area_input") or ""),
+                    fl.get("area_unit") or "",
+                    str(fl.get("area_sft") or ""),
+                    str(fl.get("rate_input") or ""),
+                    fmt(fl.get("value") or 0),
+                ])
+            brows.append(["Gross", "", "", str(det.get("built_up_sft") or ""), "", fmt(det.get("gross") or 0)])
+            brows.append(["Depreciation %", "", "", "", "", str(det.get("depreciation_pct") or 0)])
+            brows.append(["Net / FMV", "", "", "", "", fmt(bldg_fmv)])
+            brows.append(["Distress", "", "", "", "", fmt(bldg_dv)])
+            bt = Table(brows, colWidths=[32*mm, 22*mm, 18*mm, 25*mm, 28*mm, 35*mm])
+            bt.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+            ]))
+            story.append(bt)
+        else:
+            story.append(kv([
+                ["Fair Market Value of Building", f"NRs. {fmt(bldg_fmv)}"],
+                ["Distress Value of Building", f"NRs. {fmt(bldg_dv)}"],
+            ], c1=70*mm, c2=110*mm))
 
     story.append(PageBreak())
 

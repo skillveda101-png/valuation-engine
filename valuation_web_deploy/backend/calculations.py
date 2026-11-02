@@ -110,12 +110,24 @@ class PlotInput(BaseModel):
     gps: str = ""
 
 
+class FloorInput(BaseModel):
+    """One floor — area + rate can differ (Ground, First, Second…)."""
+    name: str = "Ground Floor"
+    area: float = 0.0
+    area_unit: str = "Sq.Ft."   # Sq.Ft. | Sq.M.
+    rate: float = 0.0
+    rate_unit: str = "Sq.Ft."
+
+
 class BuildingInput(BaseModel):
     has_building: bool = False
     building_type: str = "Residential"
     storeys: int = 0
     built_up_area_sqm: float = 0.0
     built_up_area_sft: float = 0.0
+    construction_cost_per_sft: float = 2800.0
+    floors: List[FloorInput] = Field(default_factory=list)
+    area_unit_default: str = "Sq.Ft."
     year_of_completion_bs: str = ""
     naksa_pass: str = "Yes"
     completion_certificate: str = "Yes"
@@ -123,7 +135,6 @@ class BuildingInput(BaseModel):
     anticipated_life_years: int = 40
     pillar_size: str = "300 MM X 300 MM"
     construction_type: str = "RCC"
-    construction_cost_per_sft: float = 2800.0
     depreciation_pct: float = 0.0
 
 
@@ -312,37 +323,91 @@ def calculate_plot_value(plot: PlotInput, bank: BankRule) -> Dict[str, Any]:
     }
 
 
+def _to_sft(area: float, unit: str) -> float:
+    u = (unit or "Sq.Ft.").lower().replace(" ", "").replace(".", "")
+    if u in ("sqm", "m2", "sqmetre", "sqmeter"):
+        return float(area) * 10.7639
+    return float(area)
+
+
+def _rate_per_sft(rate: float, unit: str) -> float:
+    u = (unit or "Sq.Ft.").lower().replace(" ", "").replace(".", "")
+    if u in ("sqm", "m2", "sqmetre", "sqmeter"):
+        return float(rate) / 10.7639
+    return float(rate)
+
+
 def calculate_building_value(bldg: Optional[BuildingInput]) -> Dict[str, Any]:
     if not bldg or not bldg.has_building:
         return {"fmv": 0, "distress": 0, "details": None}
-    sft = bldg.built_up_area_sft
-    if sft <= 0 and bldg.built_up_area_sqm > 0:
-        sft = bldg.built_up_area_sqm * 10.7639
-    gross = sft * bldg.construction_cost_per_sft
-    dep = gross * (bldg.depreciation_pct / 100.0)
+
+    floor_lines = []
+    gross = 0.0
+    total_sft = 0.0
+    floors = list(bldg.floors or [])
+    if floors:
+        for fl in floors:
+            area = float(fl.area or 0)
+            if area <= 0:
+                continue
+            sft = _to_sft(area, fl.area_unit or bldg.area_unit_default)
+            r_sft = _rate_per_sft(float(fl.rate or 0), fl.rate_unit or fl.area_unit or bldg.area_unit_default)
+            if r_sft <= 0:
+                r_sft = float(bldg.construction_cost_per_sft or 0)
+            line_val = sft * r_sft
+            gross += line_val
+            total_sft += sft
+            floor_lines.append({
+                "name": fl.name,
+                "area_input": area,
+                "area_unit": fl.area_unit or bldg.area_unit_default,
+                "area_sft": round(sft, 2),
+                "area_sqm": round(sft / 10.7639, 2),
+                "rate_input": fl.rate,
+                "rate_unit": fl.rate_unit or fl.area_unit or "Sq.Ft.",
+                "rate_per_sft": round(r_sft, 2),
+                "value": round(line_val, 0),
+            })
+    else:
+        sft = float(bldg.built_up_area_sft or 0)
+        if sft <= 0 and bldg.built_up_area_sqm > 0:
+            sft = float(bldg.built_up_area_sqm) * 10.7639
+        r_sft = float(bldg.construction_cost_per_sft or 0)
+        gross = sft * r_sft
+        total_sft = sft
+        floor_lines.append({
+            "name": "Built-up (all floors)",
+            "area_input": sft,
+            "area_unit": "Sq.Ft.",
+            "area_sft": round(sft, 2),
+            "area_sqm": round(sft / 10.7639, 2),
+            "rate_input": r_sft,
+            "rate_unit": "Sq.Ft.",
+            "rate_per_sft": round(r_sft, 2),
+            "value": round(gross, 0),
+        })
+
+    dep = gross * (float(bldg.depreciation_pct or 0) / 100.0)
     net = gross - dep
     fmv = int(net // 1000 * 1000)
     return {
         "fmv": fmv,
         "distress": int(round(fmv * 0.8)),
         "details": {
-            "built_up_sqm": bldg.built_up_area_sqm,
-            "built_up_sft": round(sft, 2),
-            "cost_per_sft": bldg.construction_cost_per_sft,
+            "floors": floor_lines,
+            "built_up_sft": round(total_sft, 2),
+            "built_up_sqm": round(total_sft / 10.7639, 2),
             "gross": round(gross, 0),
             "depreciation": round(dep, 0),
+            "depreciation_pct": bldg.depreciation_pct,
             "net": round(net, 0),
-            "storeys": bldg.storeys,
+            "storeys": bldg.storeys or len(floor_lines),
             "type": bldg.construction_type,
             "building_type": bldg.building_type,
-            "year": bldg.year_of_completion_bs,
-            "naksa_pass": bldg.naksa_pass,
-            "completion_certificate": bldg.completion_certificate,
-            "constructed_as_per_drawing": bldg.constructed_as_per_drawing,
-            "anticipated_life_years": bldg.anticipated_life_years,
-            "pillar_size": bldg.pillar_size,
+            "year_bs": bldg.year_of_completion_bs,
         },
     }
+
 
 
 def number_to_words(n: float) -> str:
