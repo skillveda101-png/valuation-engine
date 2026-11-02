@@ -26,6 +26,7 @@ from auth import (
     save_pdf_record, list_pdf_records, get_pdf_record,
     ensure_storage_dirs, PHOTOS_DIR, PDFS_DIR,
     ensure_banks_tables, list_banks_db, upsert_bank, delete_bank,
+    ensure_cooperative_presets,
     list_branches, add_branch, delete_branch, get_bank_db,
 )
 
@@ -49,6 +50,10 @@ def startup():
     ensure_reports_table()
     ensure_storage_dirs()
     ensure_banks_tables()
+    try:
+        ensure_cooperative_presets()
+    except Exception:
+        pass
 
 
 @app.get("/", response_class=HTMLResponse)

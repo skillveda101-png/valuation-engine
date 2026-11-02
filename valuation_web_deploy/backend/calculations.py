@@ -26,12 +26,25 @@ class BankRule(BaseModel):
 
 # Presets – user can override mrv/grv from frontend
 BANK_PRESETS: Dict[str, BankRule] = {
+    # --- Banks (existing) ---
     "Nabil Bank Limited": BankRule(name="Nabil Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
     "Laxmi Sunrise Bank Limited": BankRule(name="Laxmi Sunrise Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
     "Machhapuchhre Bank Limited": BankRule(name="Machhapuchhre Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
     "Global IME Bank Limited": BankRule(name="Global IME Bank Limited", mrv_pct=0.60, grv_pct=0.40, distress_factor=0.80),
     "NIC Asia Bank Limited": BankRule(name="NIC Asia Bank Limited", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.75),
     "Prabhu Bank Limited": BankRule(name="Prabhu Bank Limited", mrv_pct=0.60, grv_pct=0.40, distress_factor=0.80),
+    # --- Cooperatives / Sahakari (NMC format) ---
+    "Nepal Multipurpose Cooperative Society": BankRule(
+        name="Nepal Multipurpose Cooperative Society",
+        mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80,
+        belt2_market_factor=0.66, belt3_market_factor=0.50,
+        notes="Sahakari NMC norms: 70% market + 30% govt; DV 80% FMV",
+    ),
+    "Adhunik Saving and Credit Co-oprative Society Ltd": BankRule(
+        name="Adhunik Saving and Credit Co-oprative Society Ltd",
+        mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80,
+        notes="Sahakari format",
+    ),
     "Custom / Other": BankRule(name="Custom / Other", mrv_pct=0.70, grv_pct=0.30, distress_factor=0.80),
 }
 
@@ -49,6 +62,9 @@ class PlotInput(BaseModel):
     belt1_sqm: float = 0
     belt2_sqm: float = 0
     belt3_sqm: float = 0
+    # Land development deduction (Sahakari NMC): fraction e.g. 0.15 = 15%
+    land_dev_pct: float = 0.0
+    apply_land_dev_per_belt: bool = True
     govt_rate: float = 0
     govt_rate_unit: str = "Kattha"
     market_rate: float = 0
@@ -133,10 +149,14 @@ class ClientInput(BaseModel):
 class ValuationRequest(BaseModel):
     bank_name: str = "Nabil Bank Limited"
     branch: str = "Kakarvitta"
+    # bank | cooperative (Sahakari) — same engine, different presets/report labels
+    institution_type: str = "bank"
     # Allow override of bank rule from UI
     mrv_pct: Optional[float] = None
     grv_pct: Optional[float] = None
     distress_factor: Optional[float] = None
+    # Loan eligibility factor applied on distress (NMC often 80% of DV)
+    loan_factor: Optional[float] = 0.80
     valuation_date: str = ""
     agreement_date: str = "2023-11-26"
     letter_no: str = ""
@@ -197,9 +217,17 @@ def resolve_bank(req: ValuationRequest) -> BankRule:
 
 
 def calculate_plot_value(plot: PlotInput, bank: BankRule) -> Dict[str, Any]:
-    considered = max(0.0, plot.site_measurement_sqm - plot.deducted_row_sqm)
-    apply_dev = considered > LAND_DEV_THRESHOLD
-    net_after_dev = considered * (1 - LAND_DEV_PCT) if apply_dev else considered
+    # Net area before belting: site measurement minus ROW (matches NMC Excel)
+    considered = max(0.0, (plot.site_measurement_sqm or plot.lalpurja_sqm) - plot.deducted_row_sqm)
+
+    # Land development %: explicit plot override, else auto if area > threshold
+    ld_pct = float(plot.land_dev_pct or 0.0)
+    if ld_pct > 1.5:  # user entered 15 meaning 15%
+        ld_pct = ld_pct / 100.0
+    if ld_pct <= 0 and considered > LAND_DEV_THRESHOLD:
+        ld_pct = LAND_DEV_PCT
+    apply_dev = ld_pct > 0
+    net_after_dev = considered * (1 - ld_pct) if apply_dev else considered
     dev_deduction = considered - net_after_dev
 
     use_belt = bool(plot.use_belting)
@@ -214,8 +242,12 @@ def calculate_plot_value(plot: PlotInput, bank: BankRule) -> Dict[str, Any]:
         scale = considered / total_belt
         b1, b2, b3 = b1 * scale, b2 * scale, b3 * scale
 
-    if apply_dev:
-        factor = 1 - LAND_DEV_PCT
+    # NMC: LD applied per belt when belting is on
+    if apply_dev and (plot.apply_land_dev_per_belt or use_belt):
+        factor = 1 - ld_pct
+        n1, n2, n3 = b1 * factor, b2 * factor, b3 * factor
+    elif apply_dev:
+        factor = 1 - ld_pct
         n1, n2, n3 = b1 * factor, b2 * factor, b3 * factor
     else:
         n1, n2, n3 = b1, b2, b3
@@ -274,6 +306,7 @@ def calculate_plot_value(plot: PlotInput, bank: BankRule) -> Dict[str, Any]:
         "net_kattha": round(net_after_dev / SQM_PER_KATTHA, 3),
         "bkd": sqm_to_bkd(net_after_dev),
         "apply_land_dev": apply_dev,
+        "land_dev_pct": ld_pct,
         "location_type": plot.location_type,
         "road_width_ft": plot.road_width_ft,
     }
@@ -358,6 +391,10 @@ def run_valuation(req: ValuationRequest) -> Dict[str, Any]:
     bldg = calculate_building_value(req.building)
     total_fmv = land_fmv + bldg["fmv"]
     total_distress = land_distress + bldg["distress"]
+    lf = req.loan_factor if req.loan_factor is not None else 0.80
+    if lf > 1.5:
+        lf = lf / 100.0
+    loan_amount = int(round(total_distress * lf) // 1000 * 1000)
 
     return {
         "request": req.model_dump(),
@@ -372,6 +409,8 @@ def run_valuation(req: ValuationRequest) -> Dict[str, Any]:
             "building_fmv": bldg["fmv"],
             "building_distress": bldg["distress"],
             "total_fmv": total_fmv,
+            "loan_amount": loan_amount,
+            "loan_factor": lf,
             "total_distress": total_distress,
             "fmv_words": number_to_words(total_fmv),
             "distress_words": number_to_words(total_distress),

@@ -414,22 +414,103 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R * math.asin(min(1.0, math.sqrt(a)))
 
 
-def _fetch_nearby_landmarks(lat: float, lng: float, radius_m: int = 1500, limit: int = 3) -> List[Dict[str, Any]]:
+
+def _fetch_nearby_landmarks(lat: float, lng: float, radius_m: int = 500, limit: int = 3) -> List[Dict[str, Any]]:
     """
-    Query OpenStreetMap Overpass for nearby named places (hospital, school, fuel, etc.).
-    Returns up to `limit` landmarks with name, type, lat, lng, distance_m.
-    Fails soft (empty list) if network/API unavailable.
+    Find at least one named landmark near GPS.
+    Search radius starts at 500 m, then 1000, 1500, 2000... until a hit or max 3000 m.
     """
-    query = f"""
+    radii = []
+    r = 500
+    while r <= 3000:
+        radii.append(r)
+        r += 500
+    if radius_m and radius_m not in radii:
+        radii = sorted(set([radius_m] + radii))
+
+    for rad in radii:
+        query = f"""
 [out:json][timeout:12];
 (
-  node(around:{radius_m},{lat},{lng})[name][amenity~"hospital|clinic|school|college|university|fuel|bank|marketplace|place_of_worship|bus_station|police|townhall"];
-  node(around:{radius_m},{lat},{lng})[name][shop~"supermarket|mall|convenience"];
-  node(around:{radius_m},{lat},{lng})[name][highway=traffic_signals];
-  node(around:{radius_m},{lat},{lng})[name][place~"suburb|neighbourhood|village|hamlet|town"];
-  way(around:{radius_m},{lat},{lng})[name][amenity~"hospital|school|fuel"];
+  node(around:{rad},{lat},{lng})[name][amenity~"hospital|clinic|school|college|university|fuel|bank|marketplace|place_of_worship|bus_station|police|townhall"];
+  node(around:{rad},{lat},{lng})[name][shop~"supermarket|mall|convenience"];
+  node(around:{rad},{lat},{lng})[name][place~"suburb|neighbourhood|village|hamlet|town"];
+  way(around:{rad},{lat},{lng})[name][amenity~"hospital|school|fuel"];
 );
-out center 30;
+out center 20;
+"""
+        try:
+            import urllib.parse
+            body = urllib.parse.urlencode({"data": query}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://overpass-api.de/api/interpreter",
+                data=body,
+                headers={"User-Agent": "DynamicSolutionValuation/4.0 (landmarks)", "Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=14) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception:
+            payload = {"elements": []}
+
+        seen = set()
+        scored: List[Dict[str, Any]] = []
+        for el in payload.get("elements") or []:
+            tags = el.get("tags") or {}
+            name = (tags.get("name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            if el.get("type") == "way" and "center" in el:
+                elat = el["center"].get("lat")
+                elng = el["center"].get("lon")
+            else:
+                elat = el.get("lat")
+                elng = el.get("lon")
+            if elat is None or elng is None:
+                continue
+            dist = _haversine_m(lat, lng, float(elat), float(elng))
+            kind = tags.get("amenity") or tags.get("shop") or tags.get("place") or "landmark"
+            seen.add(name.lower())
+            scored.append({
+                "name": name[:40],
+                "type": str(kind),
+                "lat": float(elat),
+                "lng": float(elng),
+                "distance_m": int(round(dist)),
+                "search_radius_m": rad,
+            })
+        scored.sort(key=lambda x: x["distance_m"])
+        if scored:
+            return scored[: max(1, limit)]
+
+    # Nominatim reverse fallback — at least 1 area name
+    try:
+        url = (
+            f"https://nominatim.openstreetmap.org/reverse?lat={lat:.6f}&lon={lng:.6f}"
+            f"&format=json&zoom=16&addressdetails=1"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "DynamicSolutionValuation/4.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            rev = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        display = (rev.get("display_name") or "").split(",")
+        out = []
+        for part in display[:5]:
+            name = part.strip()
+            if len(name) > 3:
+                out.append({"name": name, "type": "area", "lat": lat, "lng": lng, "distance_m": 0, "search_radius_m": 500})
+            if len(out) >= 1:
+                break
+        return out[:1]
+    except Exception:
+        return []
+
+
+def _fetch_nearby_roads(lat: float, lng: float, radius_m: int = 800) -> List[Dict[str, Any]]:
+    """Fetch nearby highway ways from OSM for map-like road sketch. Soft-fail → []."""
+    query = f"""
+[out:json][timeout:12];
+way(around:{radius_m},{lat},{lng})[highway~"primary|secondary|tertiary|residential|unclassified|trunk|service"];
+out geom 25;
 """
     try:
         import urllib.parse
@@ -437,66 +518,25 @@ out center 30;
         req = urllib.request.Request(
             "https://overpass-api.de/api/interpreter",
             data=body,
-            headers={"User-Agent": "DynamicSolutionValuation/4.0 (landmarks)", "Content-Type": "application/x-www-form-urlencoded"},
+            headers={"User-Agent": "DynamicSolutionValuation/4.0 (roads)", "Content-Type": "application/x-www-form-urlencoded"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=14) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
     except Exception:
-        # Nominatim fallback: reverse + search
-        try:
-            url = (
-                f"https://nominatim.openstreetmap.org/reverse?lat={lat:.6f}&lon={lng:.6f}"
-                f"&format=json&zoom=16&addressdetails=1"
-            )
-            req = urllib.request.Request(url, headers={"User-Agent": "DynamicSolutionValuation/4.0"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                rev = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            display = (rev.get("display_name") or "").split(",")
-            out = []
-            for part in display[:5]:
-                name = part.strip()
-                if len(name) > 3:
-                    out.append({"name": name, "type": "area", "lat": lat, "lng": lng, "distance_m": 0})
-                if len(out) >= limit:
-                    break
-            return out[:limit]
-        except Exception:
-            return []
-
-    seen = set()
-    scored: List[Dict[str, Any]] = []
+        return []
+    roads = []
     for el in payload.get("elements") or []:
+        geom = el.get("geometry") or []
+        if len(geom) < 2:
+            continue
         tags = el.get("tags") or {}
-        name = (tags.get("name") or "").strip()
-        if not name or name.lower() in seen:
-            continue
-        if el.get("type") == "way" and "center" in el:
-            elat = el["center"].get("lat")
-            elng = el["center"].get("lon")
-        else:
-            elat = el.get("lat")
-            elng = el.get("lon")
-        if elat is None or elng is None:
-            continue
-        dist = _haversine_m(lat, lng, float(elat), float(elng))
-        kind = (
-            tags.get("amenity")
-            or tags.get("shop")
-            or tags.get("place")
-            or tags.get("highway")
-            or "landmark"
-        )
-        seen.add(name.lower())
-        scored.append({
-            "name": name[:40],
-            "type": str(kind),
-            "lat": float(elat),
-            "lng": float(elng),
-            "distance_m": int(round(dist)),
+        roads.append({
+            "name": (tags.get("name") or tags.get("highway") or "road")[:40],
+            "highway": tags.get("highway") or "residential",
+            "points": [(float(p["lat"]), float(p["lon"])) for p in geom if "lat" in p and "lon" in p],
         })
-    scored.sort(key=lambda x: x["distance_m"])
-    return scored[:limit]
+    return roads
 
 
 def _deg2num(lat: float, lon: float, zoom: int):
@@ -622,167 +662,227 @@ def _static_map_flowable(lat: float, lng: float, max_w_mm: float = 170, max_h_mm
 
 
 
+
+
+
 def make_site_plan_drawing(
     plot: Dict[str, Any],
     gps_text: str = "",
     landmarks: Optional[List[Dict[str, Any]]] = None,
+    roads: Optional[List[Dict[str, Any]]] = None,
     width: float = 470,
-    height: float = 360,
+    height: float = 380,
 ) -> Drawing:
     """
-    Black-and-white line SITE PLAN:
-    - road network as pure black lines (map-style)
-    - junction + subject site
-    - up to 3 landmarks with approximate distances
+    B&W location plan using only rectangular/square shapes (no circles).
+    Roads from OSM geometry when available; else schematic Google-Earth-like network.
+    At least one landmark callout.
     """
     d = Drawing(width, height)
-    d.add(Rect(0, 0, width, height, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.0))
+    d.add(Rect(0, 0, width, height, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.3))
 
-    def trunc(s, n=30):
+    def trunc(s, n=26):
         s = str(s or "")
         return s if len(s) <= n else s[: n - 1] + "…"
 
+    def dashed(x1, y1, x2, y2, dash=5, gap=3, sw=0.8):
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length < 1:
+            return
+        ux, uy = (x2 - x1) / length, (y2 - y1) / length
+        pos, on = 0.0, True
+        while pos < length:
+            seg = dash if on else gap
+            npos = min(length, pos + seg)
+            if on:
+                d.add(Line(x1 + ux * pos, y1 + uy * pos, x1 + ux * npos, y1 + uy * npos,
+                           strokeColor=colors.black, strokeWidth=sw))
+            pos = npos
+            on = not on
+
+    def dim_v(x, y1, y2, label):
+        if y2 < y1:
+            y1, y2 = y2, y1
+        d.add(Line(x - 3, y1, x + 3, y1, strokeColor=colors.black, strokeWidth=0.6))
+        d.add(Line(x - 3, y2, x + 3, y2, strokeColor=colors.black, strokeWidth=0.6))
+        d.add(Line(x, y1, x, y2, strokeColor=colors.black, strokeWidth=0.7))
+        d.add(String(x + 5, (y1 + y2) / 2 - 2, label, fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+
+    def dim_h(x1, x2, y, label):
+        if x2 < x1:
+            x1, x2 = x2, x1
+        d.add(Line(x1, y - 3, x1, y + 3, strokeColor=colors.black, strokeWidth=0.6))
+        d.add(Line(x2, y - 3, x2, y + 3, strokeColor=colors.black, strokeWidth=0.6))
+        d.add(Line(x1, y, x2, y, strokeColor=colors.black, strokeWidth=0.7))
+        d.add(String((x1 + x2) / 2, y + 4, label, fontName="Helvetica", fontSize=6.5,
+                     fillColor=colors.black, textAnchor="middle"))
+
     plot_no = str(plot.get("plot_no") or "")
-    road = (plot.get("road_width") or plot.get("road_type") or "").strip()
-    road_ft = plot.get("road_width_ft") or 0
-    road_label = road or (f"{road_ft} Ft Road" if road_ft else "Access Road")
-    east = trunc(plot.get("east") or "", 22)
-    west = trunc(plot.get("west") or "", 22)
-    north = trunc(plot.get("north") or "", 22)
-    south = trunc(plot.get("south") or "", 22)
-
-    landmarks = landmarks or []
-
-    # --- Compass (B&W) ---
-    cx, cy, R = width - 48, height - 48, 24
-    d.add(Circle(cx, cy, R, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.2))
-    d.add(Line(cx, cy - R + 3, cx, cy + R - 3, strokeColor=colors.black, strokeWidth=1))
-    d.add(Line(cx - R + 3, cy, cx + R - 3, cy, strokeColor=colors.black, strokeWidth=1))
-    d.add(Polygon([cx, cy + R - 2, cx - 4, cy + 5, cx + 4, cy + 5],
-                  fillColor=colors.black, strokeColor=colors.black, strokeWidth=0.4))
-    d.add(String(cx, cy + R + 7, "N", fontName="Helvetica-Bold", fontSize=9, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx, cy - R - 9, "S", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx + R + 7, cy - 2, "E", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
-    d.add(String(cx - R - 7, cy - 2, "W", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black, textAnchor="middle"))
-
-    # --- Black line road network (Google Maps–style simplified) ---
-    # Main E-W road
-    road_y = 110
-    d.add(Line(30, road_y, width - 30, road_y, strokeColor=colors.black, strokeWidth=2.4))
-    d.add(Line(30, road_y - 7, width - 30, road_y - 7, strokeColor=colors.black, strokeWidth=0.9))
-    # Secondary road branching north
-    jx = 150
-    d.add(Line(jx, road_y, jx, height - 70, strokeColor=colors.black, strokeWidth=2.0))
-    d.add(Line(jx - 7, road_y, jx - 7, height - 70, strokeColor=colors.black, strokeWidth=0.8))
-    d.add(Line(jx + 7, road_y, jx + 7, height - 70, strokeColor=colors.black, strokeWidth=0.8))
-    # Small side spur east from junction
-    d.add(Line(jx, road_y + 55, jx + 90, road_y + 55, strokeColor=colors.black, strokeWidth=1.2))
-    d.add(Line(jx, road_y + 55 - 4, jx + 90, road_y + 55 - 4, strokeColor=colors.black, strokeWidth=0.6))
-    # Another spur NW
-    d.add(Line(jx, height - 120, jx - 70, height - 90, strokeColor=colors.black, strokeWidth=1.1))
-
-    # Junction marker
-    d.add(Circle(jx, road_y, 4.5, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.3))
-    d.add(String(jx + 55, road_y + 12, "JUNCTION", fontName="Helvetica-Bold", fontSize=7,
-                 fillColor=colors.black, textAnchor="middle"))
-
-    # Direction labels on main road
-    d.add(String(jx + 70, road_y - 18, "Way →", fontName="Helvetica-Oblique", fontSize=7, fillColor=colors.black))
-    d.add(String(jx - 50, road_y - 18, "← Way", fontName="Helvetica-Oblique", fontSize=7, fillColor=colors.black))
-    d.add(String(jx + 40, road_y + 18, trunc(road_label, 36), fontName="Helvetica", fontSize=7, fillColor=colors.black))
-
-    # Subject site (hatched rectangle on approach road)
-    sx, sy, sw, sh = jx - 38, height - 145, 32, 40
-    d.add(Rect(sx, sy, sw, sh, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.6))
-    for i in range(0, int(sh), 4):
-        d.add(Line(sx, sy + i, sx + sw, sy + i, strokeColor=colors.black, strokeWidth=0.35))
-    d.add(String(sx + sw / 2, sy + sh / 2 - 2, "SITE", fontName="Helvetica-Bold", fontSize=8,
-                 fillColor=colors.black, textAnchor="middle"))
-    d.add(String(sx + sw / 2, sy - 11, f"Plot {plot_no}" if plot_no else "Subject property",
-                 fontName="Helvetica", fontSize=7, fillColor=colors.black, textAnchor="middle"))
-
-    # Distance from junction to site along approach
-    site_dist_label = "APX. 560 M."
-    # Prefer first landmark distance or form distance
+    road_label = (plot.get("road_width") or plot.get("road_type") or "").strip()
+    if not road_label and plot.get("road_width_ft"):
+        road_label = f"{plot.get('road_width_ft')} Ft Road"
+    road_label = road_label or "Access Road"
+    east = trunc(plot.get("east") or "—", 18)
+    west = trunc(plot.get("west") or "—", 18)
+    north = trunc(plot.get("north") or "—", 18)
+    south = trunc(plot.get("south") or "—", 18)
     form_dist = (plot.get("distance_to_market") or "").strip()
-    d.add(Line(jx + 14, (sy + road_y) / 2, jx + 26, (sy + road_y) / 2, strokeColor=colors.black, strokeWidth=0.7))
-    d.add(String(jx + 30, (sy + road_y) / 2 - 3, site_dist_label if not form_dist else trunc(form_dist, 16),
-                 fontName="Helvetica", fontSize=7, fillColor=colors.black))
-
-    # --- 3 landmarks as boxes with leader lines and distances ---
-    # Layout positions around the network
-    slots = [
-        (jx - 120, height - 160),  # left of site
-        (jx + 100, height - 130),  # right upper
-        (jx + 130, road_y + 70),   # right of junction
-    ]
-    # Ensure 3 landmarks: API + form fallbacks
-    lm_list = list(landmarks)[:3]
     form_lm = (plot.get("nearest_landmark") or "").strip()
+
+    # --- Square north arrow (no circle) ---
+    nx, ny, ns = width - 48, height - 48, 28
+    d.add(Rect(nx - ns / 2, ny - ns / 2, ns, ns, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.1))
+    d.add(Line(nx, ny - ns / 2 + 3, nx, ny + ns / 2 - 3, strokeColor=colors.black, strokeWidth=0.9))
+    d.add(Line(nx - ns / 2 + 3, ny, nx + ns / 2 - 3, ny, strokeColor=colors.black, strokeWidth=0.9))
+    d.add(Polygon([nx, ny + ns / 2 - 2, nx - 3, ny + 4, nx + 3, ny + 4],
+                  fillColor=colors.black, strokeColor=colors.black, strokeWidth=0))
+    d.add(String(nx, ny + ns / 2 + 7, "N", fontName="Helvetica-Bold", fontSize=8,
+                 fillColor=colors.black, textAnchor="middle"))
+
+    # --- Roads: project OSM geometry if present ---
+    roads = roads or []
+    margin = 40
+    map_x0, map_y0 = margin, 70
+    map_x1, map_y1 = width - margin, height - 55
+    drawn_osm = False
+    if roads:
+        all_pts = []
+        for rd in roads:
+            all_pts.extend(rd.get("points") or [])
+        if len(all_pts) >= 2:
+            lats = [p[0] for p in all_pts]
+            lngs = [p[1] for p in all_pts]
+            min_lat, max_lat = min(lats), max(lats)
+            min_lng, max_lng = min(lngs), max(lngs)
+            # pad
+            if abs(max_lat - min_lat) < 1e-6:
+                max_lat += 0.001
+                min_lat -= 0.001
+            if abs(max_lng - min_lng) < 1e-6:
+                max_lng += 0.001
+                min_lng -= 0.001
+
+            def proj(la, lo):
+                # y increases up in ReportLab drawing
+                x = map_x0 + (lo - min_lng) / (max_lng - min_lng) * (map_x1 - map_x0)
+                y = map_y0 + (la - min_lat) / (max_lat - min_lat) * (map_y1 - map_y0)
+                return x, y
+
+            for rd in roads:
+                pts = rd.get("points") or []
+                if len(pts) < 2:
+                    continue
+                hw = rd.get("highway") or "residential"
+                sw = 1.4 if hw in ("primary", "trunk", "secondary") else 0.9
+                for i in range(len(pts) - 1):
+                    x1, y1 = proj(pts[i][0], pts[i][1])
+                    x2, y2 = proj(pts[i + 1][0], pts[i + 1][1])
+                    d.add(Line(x1, y1, x2, y2, strokeColor=colors.black, strokeWidth=sw))
+                # parallel edge offset for major roads (simple)
+                if hw in ("primary", "trunk", "secondary") and len(pts) >= 2:
+                    for i in range(len(pts) - 1):
+                        x1, y1 = proj(pts[i][0], pts[i][1])
+                        x2, y2 = proj(pts[i + 1][0], pts[i + 1][1])
+                        # small perpendicular offset
+                        dx, dy = x2 - x1, y2 - y1
+                        L = math.hypot(dx, dy) or 1
+                        ox, oy = -dy / L * 2.5, dx / L * 2.5
+                        d.add(Line(x1 + ox, y1 + oy, x2 + ox, y2 + oy, strokeColor=colors.black, strokeWidth=0.6))
+            drawn_osm = True
+
+    # Schematic fallback roads (Google-Earth-like network) if no OSM
+    jx, ry = 160, 100
+    if not drawn_osm:
+        # main E-W
+        d.add(Line(30, ry + 5, width - 30, ry + 5, strokeColor=colors.black, strokeWidth=1.2))
+        d.add(Line(30, ry - 5, width - 30, ry - 5, strokeColor=colors.black, strokeWidth=1.2))
+        dashed(30, ry, width - 30, ry, dash=7, gap=4, sw=0.5)
+        # N-S approach with dog-leg
+        d.add(Line(jx - 5, ry, jx - 5, 210, strokeColor=colors.black, strokeWidth=1.1))
+        d.add(Line(jx + 5, ry, jx + 5, 210, strokeColor=colors.black, strokeWidth=1.1))
+        d.add(Line(jx - 5, 210, jx - 28, 245, strokeColor=colors.black, strokeWidth=1.1))
+        d.add(Line(jx + 5, 210, jx - 18, 245, strokeColor=colors.black, strokeWidth=1.1))
+        d.add(Line(jx - 28, 245, jx - 28, height - 75, strokeColor=colors.black, strokeWidth=1.1))
+        d.add(Line(jx - 18, 245, jx - 18, height - 75, strokeColor=colors.black, strokeWidth=1.1))
+        dashed(jx, ry, jx, 210, dash=7, gap=4, sw=0.5)
+        # cross street
+        d.add(Line(jx + 5, ry + 55, jx + 120, ry + 55, strokeColor=colors.black, strokeWidth=0.9))
+        d.add(Line(jx + 5, ry + 49, jx + 120, ry + 49, strokeColor=colors.black, strokeWidth=0.9))
+
+    # Junction as SQUARE (no circle)
+    d.add(Rect(jx - 5, ry - 5, 10, 10, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.2))
+    d.add(String(jx + 40, ry + 12, "JUNCTION", fontName="Helvetica-Bold", fontSize=6.5, fillColor=colors.black))
+    d.add(String(jx + 20, ry + 18, trunc(road_label, 30), fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(String(width - 100, ry - 16, "Way →", fontName="Helvetica-Oblique", fontSize=6.5, fillColor=colors.black))
+    d.add(String(50, ry - 16, "← Way", fontName="Helvetica-Oblique", fontSize=6.5, fillColor=colors.black))
+
+    # SITE as rectangle
+    sx, sy, sw, sh = jx - 58, height - 125, 30, 36
+    d.add(Rect(sx, sy, sw, sh, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.5))
+    for i in range(2, int(sh) - 1, 3):
+        d.add(Line(sx + 1, sy + i, sx + sw - 1, sy + i, strokeColor=colors.black, strokeWidth=0.35))
+    d.add(String(sx + sw / 2, sy + sh / 2 - 1, "SITE", fontName="Helvetica-Bold", fontSize=7.5,
+                 fillColor=colors.black, textAnchor="middle"))
+    d.add(String(sx + sw / 2, sy - 10, f"PLOT {plot_no}" if plot_no else "SUBJECT",
+                 fontName="Helvetica", fontSize=6.5, fillColor=colors.black, textAnchor="middle"))
+
+    dim_v(jx + 14, ry + 6, sy, form_dist if form_dist else "APX. 560 M.")
+    dim_h(jx + 8, jx + 130, ry + 28, "APX. 380 M.")
+
+    # At least 1 landmark — rectangular callout only
+    lm_list = list(landmarks or [])
     if form_lm and not any(form_lm.lower() == (x.get("name") or "").lower() for x in lm_list):
-        lm_list.append({"name": form_lm, "type": "noted", "distance_m": None})
-    while len(lm_list) < 3:
-        placeholders = [
-            {"name": "Local market / chowk", "type": "area", "distance_m": 380},
-            {"name": "Main road junction", "type": "junction", "distance_m": 560},
-            {"name": "Neighbourhood centre", "type": "area", "distance_m": 750},
-        ]
-        lm_list.append(placeholders[len(lm_list)])
-    lm_list = lm_list[:3]
+        lm_list.insert(0, {"name": form_lm, "type": "field", "distance_m": None})
+    if not lm_list:
+        lm_list = [{"name": "Nearest local chowk", "type": "area", "distance_m": 500}]
+    lm = lm_list[0]
+    lx, ly = jx + 100, height - 140
+    d.add(Rect(lx, ly, 90, 30, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.0))
+    d.add(String(lx + 45, ly + 17, trunc(lm.get("name"), 18).upper(), fontName="Helvetica",
+                 fontSize=6.5, fillColor=colors.black, textAnchor="middle"))
+    dm = lm.get("distance_m")
+    dist_txt = f"APX. {int(dm)} M." if dm not in (None, 0) else (form_dist or "APX. 500 M.")
+    d.add(String(lx + 45, ly + 6, dist_txt, fontName="Helvetica-Bold", fontSize=6.5,
+                 fillColor=colors.black, textAnchor="middle"))
+    dashed(lx, ly + 15, sx + sw, sy + sh / 2, dash=3, gap=2, sw=0.5)
 
-    for idx, lm in enumerate(lm_list):
-        lx, ly = slots[idx]
-        name = trunc(lm.get("name") or f"Landmark {idx+1}", 22)
-        dist_m = lm.get("distance_m")
-        if dist_m is None or dist_m == 0:
-            dist_txt = form_dist if form_dist and idx == 0 else f"APX. {[380,560,750][idx]} M."
-        else:
-            dist_txt = f"APX. {int(dist_m)} M."
-        # box
-        d.add(Rect(lx, ly, 72, 28, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1.0))
-        d.add(String(lx + 36, ly + 15, name, fontName="Helvetica", fontSize=6.5,
-                     fillColor=colors.black, textAnchor="middle"))
-        d.add(String(lx + 36, ly + 5, dist_txt, fontName="Helvetica-Bold", fontSize=6.5,
-                     fillColor=colors.black, textAnchor="middle"))
-        # leader line toward junction or site
-        tx, ty = (sx + sw / 2, sy) if idx == 0 else (jx, road_y)
-        d.add(Line(lx + 36, ly, tx, ty, strokeColor=colors.black, strokeWidth=0.5))
+    # Search radius note (text only — do not draw circle)
+    rad_note = ""
+    if lm.get("search_radius_m"):
+        rad_note = f"Landmark search ≤ {lm.get('search_radius_m')} m"
+    elif dm:
+        rad_note = "Landmark from map search (500 m step)"
 
-    # Charkilla + GPS text block (left bottom)
-    info_y = 70
-    d.add(String(30, info_y, "BOUNDARIES", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black))
-    if north:
-        d.add(String(30, info_y - 11, f"N: {north}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
-    if east:
-        d.add(String(30, info_y - 21, f"E: {east}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
-    if south:
-        d.add(String(30, info_y - 31, f"S: {south}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
-    if west:
-        d.add(String(30, info_y - 41, f"W: {west}", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
+    # Charkilla + GPS
+    d.add(String(28, 55, "CHARKILLA", fontName="Helvetica-Bold", fontSize=6.5, fillColor=colors.black))
+    d.add(String(28, 45, f"N: {north}", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(String(28, 36, f"E: {east}", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(String(28, 27, f"S: {south}", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(String(28, 18, f"W: {west}", fontName="Helvetica", fontSize=6, fillColor=colors.black))
     if gps_text:
-        d.add(String(30, info_y - 54, f"GPS: {trunc(gps_text, 28)}", fontName="Helvetica-Bold", fontSize=6.5, fillColor=colors.black))
+        d.add(String(28, 8, f"GPS: {trunc(gps_text, 28)}", fontName="Helvetica-Bold", fontSize=6, fillColor=colors.black))
 
-    # Legend
-    d.add(String(width - 160, 55, "LEGEND", fontName="Helvetica-Bold", fontSize=7, fillColor=colors.black))
-    d.add(Line(width - 160, 42, width - 120, 42, strokeColor=colors.black, strokeWidth=2))
-    d.add(String(width - 115, 39, "Road (B&W line)", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
-    d.add(Rect(width - 160, 22, 14, 10, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1))
-    d.add(String(width - 140, 24, "Subject site", fontName="Helvetica", fontSize=6.5, fillColor=colors.black))
-    d.add(String(width - 160, 10, "Distances approx. from junction / site", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(String(width - 160, 45, "LEGEND", fontName="Helvetica-Bold", fontSize=6.5, fillColor=colors.black))
+    d.add(Line(width - 160, 35, width - 130, 35, strokeColor=colors.black, strokeWidth=1.1))
+    d.add(String(width - 125, 32, "Road", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    d.add(Rect(width - 160, 18, 12, 10, fillColor=colors.white, strokeColor=colors.black, strokeWidth=1))
+    d.add(String(width - 143, 20, "Site / landmark (square)", fontName="Helvetica", fontSize=6, fillColor=colors.black))
+    if rad_note:
+        d.add(String(width - 160, 8, rad_note, fontName="Helvetica", fontSize=5.5, fillColor=colors.black))
 
-    d.add(String(width / 2, 14, "SITE PLAN", fontName="Helvetica-Bold", fontSize=11,
+    d.add(String(width / 2, 8, "SITE PLAN", fontName="Helvetica-Bold", fontSize=10,
                  fillColor=colors.black, textAnchor="middle"))
     return d
 
 
+
 def build_location_plan_story(data: Dict[str, Any], st) -> List:
-    """Full-page B&W site plan with header strip and up to 3 map landmarks + distances."""
+    """Full-page location plan: header + B&W rectangular CAD plan (no circles, no 3-point table)."""
     req = data.get("request") or {}
     client = req.get("client") or {}
     plots_req = req.get("plots") or []
     plot = plots_req[0] if plots_req else {}
-    gps_global = (req.get("gps") or "").strip()
-    gps_text = gps_global or (plot.get("gps") or "")
+    gps_text = (req.get("gps") or "").strip() or (plot.get("gps") or "")
     if not gps_text:
         for p in plots_req:
             if p.get("gps"):
@@ -801,14 +901,18 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
     owner_name = client.get("owner_name") or client_name
     plot_nos = ", ".join(str(p.get("plot_no") or "") for p in plots_req if p.get("plot_no"))
 
-    # Fetch real nearby landmarks when GPS known
     landmarks: List[Dict[str, Any]] = []
+    roads: List[Dict[str, Any]] = []
     coords = _parse_gps(gps_text)
     if coords:
         try:
-            landmarks = _fetch_nearby_landmarks(coords[0], coords[1], radius_m=1500, limit=3)
+            landmarks = _fetch_nearby_landmarks(coords[0], coords[1], radius_m=500, limit=1)
         except Exception:
             landmarks = []
+        try:
+            roads = _fetch_nearby_roads(coords[0], coords[1], radius_m=800)
+        except Exception:
+            roads = []
 
     header_style = ParagraphStyle(
         name="SitePlanHead", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=colors.black,
@@ -816,12 +920,6 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
     header_small = ParagraphStyle(
         name="SitePlanSmall", fontName="Helvetica", fontSize=7, leading=9, textColor=colors.black,
     )
-
-    # Landmark summary line for header
-    lm_summary = " / ".join(
-        f"{lm.get('name')} ({lm.get('distance_m')} m)" if lm.get("distance_m") else str(lm.get("name"))
-        for lm in landmarks[:3]
-    ) if landmarks else (plot.get("nearest_landmark") or "—")
 
     head_data = [
         [
@@ -852,44 +950,11 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
 
-    drawing = make_site_plan_drawing(plot, gps_text=gps_text, landmarks=landmarks, width=470, height=360)
+    drawing = make_site_plan_drawing(
+        plot, gps_text=gps_text, landmarks=landmarks, roads=roads, width=470, height=380,
+    )
 
-    # Landmark distance table (3 points)
-    lm_rows = [["S.No.", "Landmark (map / field)", "Type", "Approx. distance"]]
-    if landmarks:
-        for i, lm in enumerate(landmarks[:3], 1):
-            dm = lm.get("distance_m")
-            lm_rows.append([
-                str(i),
-                str(lm.get("name") or "—"),
-                str(lm.get("type") or "—"),
-                f"APX. {dm} M." if dm not in (None, 0) else "—",
-            ])
-    else:
-        form_lm = (plot.get("nearest_landmark") or "").strip() or "Nearest noted landmark"
-        form_dist = (plot.get("distance_to_market") or "").strip() or "APX. — M."
-        lm_rows.append(["1", form_lm, "field note", form_dist])
-        lm_rows.append(["2", "Approach road junction", "junction", "APX. 560 M."])
-        lm_rows.append(["3", "Local chowk / market", "area", "APX. 380 M."])
-
-    lm_tbl = Table(lm_rows, colWidths=[12*mm, 70*mm, 35*mm, 40*mm])
-    lm_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-
-    inner = [
-        head,
-        Spacer(1, 3),
-        drawing,
-        Spacer(1, 3),
-        Paragraph("<b>Three reference points &amp; approximate distances</b>", header_small),
-        lm_tbl,
-    ]
+    inner = [head, Spacer(1, 4), drawing]
     inner_tbl = Table([[x] for x in inner], colWidths=[175*mm])
     inner_tbl.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 2, colors.black),
@@ -898,7 +963,6 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
-
     outer = Table([[inner_tbl]], colWidths=[180*mm])
     outer.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 3.5, colors.black),
@@ -908,16 +972,28 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
 
-    out: List = [outer, Spacer(1, 3)]
-    out.append(Paragraph(
-        "Black-and-white line plan for valuation context. Landmark names/distances are approximate "
-        "(from OpenStreetMap when GPS is available, otherwise field notes). Not a cadastral survey.",
-        st["Words"],
-    ))
-    return out
+    return [
+        outer,
+        Spacer(1, 3),
+        Paragraph(
+            "Location plan drawn in black-and-white linework (rectangular symbols only). "
+            "Landmark search expands 500 m → 1000 m → … until at least one named point is found. "
+            "Roads follow OpenStreetMap geometry when available. Not a cadastral survey.",
+            st["Words"],
+        ),
+    ]
 
 
 def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
+    req = data.get("request") or {}
+    bank_name = (req.get("bank_name") or "") + " " + (req.get("institution_type") or "")
+    if "cooperative" in bank_name.lower() or "sahakari" in bank_name.lower() or "co-op" in bank_name.lower() or "co-operative" in bank_name.lower() or "multipurpose" in (req.get("bank_name") or "").lower():
+        return generate_sahakari_valuation_pdf(data)
+    return _generate_bank_valuation_pdf(data)
+
+
+def _generate_bank_valuation_pdf(data: Dict[str, Any]) -> bytes:
+
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -1555,3 +1631,371 @@ def generate_valuation_pdf(data: Dict[str, Any]) -> bytes:
     doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
     buf.seek(0)
     return buf.read()
+
+
+
+
+def generate_sahakari_valuation_pdf(data: Dict[str, Any]) -> bytes:
+    """
+    PDF layout aligned with NMC Excel "Final Valuation" sheet (not pre sheet).
+    """
+    from reportlab.platypus import PageBreak
+    st = styles()
+    req = data.get("request") or {}
+    client = req.get("client") or {}
+    summary = data.get("summary") or {}
+    plots = data.get("plots") or []
+    firm = {
+        "firm_name": req.get("firm_name") or "DYNAMIC SOLUTION PVT. LTD.",
+        "firm_address": req.get("firm_address") or "Mechinagar Municipality -07, Jhapa",
+        "firm_pan": req.get("firm_pan") or "609759503",
+        "firm_reg_no": req.get("firm_reg_no") or "238082/077/078",
+        "firm_email": req.get("firm_email") or "d.solution100@gmail.com",
+        "firm_phone": req.get("firm_phone") or "9842688123, 9816969180",
+    }
+    bank = req.get("bank_name") or "Nepal Multipurpose Cooperative Society"
+    branch = req.get("branch") or ""
+    date = req.get("valuation_date") or req.get("field_visit_date") or ""
+    member = client.get("client_name") or ""
+    owner = client.get("owner_name") or member
+    mem_addr = client.get("client_address_citizenship") or ""
+    owner_deed = client.get("owner_address_dhanipurja") or client.get("owner_address_charkilla") or ""
+    owner_ch = client.get("owner_address_charkilla") or ""
+    contact = client.get("contact_no") or client.get("owner_contact") or ""
+    gps = req.get("gps") or ""
+    plot_nos = ", ".join(str(p.get("plot_no") or "") for p in plots)
+    valuator = req.get("valuator_name") or "Er. Yogesh Bhattarai"
+
+    land_fmv = summary.get("land_fmv") or summary.get("total_fmv") or 0
+    land_dv = summary.get("land_distress") or 0
+    bldg_fmv = summary.get("building_fmv") or 0
+    bldg_dv = summary.get("building_distress") or 0
+    total_fmv = summary.get("total_fmv") or 0
+    total_dv = summary.get("total_distress") or 0
+    loan = summary.get("loan_amount") or int(total_dv * 0.8)
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=12*mm, bottomMargin=14*mm,
+        title="Valuation Report of Fixed Assets",
+    )
+    story = []
+
+    def H(txt):
+        story.append(Paragraph(f"<b>{txt}</b>", st["H2"]))
+    def P(txt):
+        story.append(Paragraph(txt, st["Body"]))
+    def S(h=4):
+        story.append(Spacer(1, h))
+
+    # ===== Title block (Final Valuation) =====
+    story.append(Paragraph("<b>VALUATION REPORT OF FIXED ASSETS</b>", st["Title"]))
+    S(6)
+    story.append(Paragraph(f"<b>{firm['firm_name']}</b>", st["FirmHead"]))
+    story.append(Paragraph(firm["firm_address"], st["Small"]))
+    story.append(Paragraph("<b>VALUATION REPORT SUMMARY — FOR LAND</b>", st["SectionTitle"]))
+    S(3)
+    meta = [
+        [f"Pan No :- {firm['firm_pan']}", f"Phone no  {firm['firm_phone']}"],
+        [f"Reg:- {firm['firm_reg_no']}", f"Gmail : {firm['firm_email']}"],
+        ["", f"Date :- {date}"],
+    ]
+    mt = Table(meta, colWidths=[95*mm, 85*mm])
+    mt.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    story.append(mt)
+    S(8)
+
+    # Member / property identity
+    id_rows = [
+        ["Name of Member", member],
+        ["Address of Member as per Citizenship", mem_addr],
+        ["Owner of property", owner],
+        ["Address of property as per Dhanipurja", owner_deed],
+        ["Present Address of property as per Charkilla", owner_ch],
+        ["Tel. No./Contact No.", contact],
+        ["GPS COORDINATES (IN DECIMAL PLACES)", gps],
+        ["Plot No.(s)", plot_nos],
+    ]
+    story.append(kv(id_rows, c1=70*mm, c2=110*mm))
+    S(8)
+
+    # SUBMITTED TO / BY
+    P("<b>SUBMITTED TO :-</b>")
+    P(bank)
+    P(f"{branch} Branch, Jhapa" if branch else "Jhapa")
+    P(f"Date :- {date}")
+    S(4)
+    P("<b>SUBMITTED BY :-</b>")
+    P(f"<b>{firm['firm_name']}</b>")
+    P(firm["firm_address"])
+    S(8)
+
+    # TABLE OF CONTENTS (Final Valuation style)
+    H("TABLE OF CONTENTS")
+    toc = [
+        "1. VALUATION CERTIFICATE",
+        "2. PURPOSE OF VALUATION",
+        "3. EXECUTIVE SUMMARY",
+        "    3.1 Valuator's Opinion",
+        "    3.2 Fair Market Value",
+        "    3.3 Distress Value",
+        "    3.4 Remarks & Observation",
+        "4. VALUATION THEORY & METHODOLOGY",
+        "5. SOURCE OF INFORMATION",
+        "6. QUALIFICATION AND DECLARATIONS",
+        "7. Land Area Checking",
+        "8. Land Rate",
+        "9. Valuation Table of Land",
+        "10. Site Plan / GPS MAP",
+        "APPENDIX — Details of Assets & Legal Aspects",
+    ]
+    for line in toc:
+        story.append(Paragraph(line, st["Body"]))
+    story.append(PageBreak())
+
+    # ===== 1. Valuation Certificate =====
+    H("1. Valuation Certificate")
+    P("To")
+    P("The Manager")
+    P(f"<b>{bank}</b>")
+    P(f"{branch} Branch, Jhapa" if branch else "")
+    S(3)
+    P("<b>Subject : Pre- VALUATION REPORT OF FIXED PROPERTY</b>")
+    S(3)
+    P("Dear Sir,Madam")
+    P(
+        "We are submitting the valuation report of the land which is intended to be mortgaged "
+        "to the Cooperative by the client :"
+    )
+    story.append(kv([
+        ["Member", member],
+        ["Address Of Member as per citizenship", mem_addr],
+        ["Owner Of the Property", owner],
+        ["Address Of the Property as per Dhanipurja", owner_deed],
+        ["Present Ad. of the Property as per charkilla", owner_ch],
+    ], c1=75*mm, c2=105*mm))
+    S(4)
+    P("We hereby declare and certify that :")
+    area_bits = []
+    for p in plots:
+        area_bits.append(
+            f"Plot No {p.get('plot_no')}: LORC {p.get('lalpurja_sqm')} Sq.M., "
+            f"site {p.get('site_sqm')} Sq.M., net for valuation {p.get('net_sqm')} Sq.M."
+        )
+    cert = [
+        f"1) We have physically inspected, verified and measured the properties in presence of the client/representative of the client on {req.get('field_visit_date') or date}.",
+        "2) We also certify that no individual in our firm/company has any financial interest in the said property and client or the client's business.",
+        "3) The conclusion in this report are our unbiased considered opinion of Fair Market Value and Distress Value of the subject valuation which is assets as of the date given below.",
+        "4) " + (" ".join(area_bits) if area_bits else "Area as per LORC and site measurement as detailed in Land Area Checking."),
+        "5) Weighted average rate adopts 70% of Market rate and 30% of Government rate as per Cooperative norms (or institution-specific weights shown in Land Rate).",
+        "6) Valuation Guidelines of the Cooperative provided to us has been fully complied with.",
+    ]
+    for c in cert:
+        P(c)
+    S(6)
+
+    # Summary table
+    H("Summary of Valuation")
+    sum_rows = [["SN.", "PROPERTY TYPE", "PLOT NO", "AREA", "Road Access", "Fair Market Value", "Distress Value"]]
+    for p in plots:
+        sum_rows.append([
+            "a)", "LAND", str(p.get("plot_no") or ""),
+            f"{p.get('net_sqm')} Sq.M.",
+            "Yes",
+            fmt(p.get("fmv") or 0),
+            fmt(p.get("distress") or 0),
+        ])
+    if bldg_fmv:
+        sum_rows.append(["c)", "BUILDING", "", "", "", fmt(bldg_fmv), fmt(bldg_dv)])
+    sum_rows.append(["", "", "", "Say", "", fmt(total_fmv), fmt(total_dv)])
+    stbl = Table(sum_rows, colWidths=[12*mm, 28*mm, 22*mm, 28*mm, 22*mm, 32*mm, 32*mm])
+    stbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(stbl)
+    S(4)
+    P(f"<b>Recommended loan amount (approx.):</b> NRs. {fmt(loan)}")
+    S(6)
+    P("All relevant calculation and documents are attached herewith for the reference and record which constitute integral part of this valuation report.")
+    S(10)
+    P("____________________________")
+    P(f"<b>{valuator}</b>")
+    P("Authorized Signatory / Civil Engineer")
+    story.append(PageBreak())
+
+    # ===== 3. Executive Summary =====
+    H("3. EXECUTIVE SUMMARY")
+    H("3.1 Valuator's Opinion")
+    P(
+        "Provided all remarks on relevant headings are fulfilled, the Fair Market Value of the properties "
+        "as per the guidelines of the Cooperative have been proposed after scrutiny of all relevant documents "
+        "& physical verification of property at location."
+    )
+    S(4)
+    story.append(kv([
+        ["3.2 Fair Market Value (Total)", f"NRs. {fmt(total_fmv)}"],
+        ["3.3 Distress Value of Land Only (DV)", f"NRs. {fmt(land_dv)}"],
+        ["3.3 Total Cost of Building Distress Value", f"NRs. {fmt(bldg_dv)}"],
+        ["3.4 Total Distress Value", f"NRs. {fmt(total_dv)}"],
+        ["3.6 Remarks & Observations", "In our opinion, this property is secured mortgage for the amount recommended in the valuation certificate."],
+    ], c1=75*mm, c2=105*mm))
+    story.append(PageBreak())
+
+    # ===== 4. Theory =====
+    H("4. VALUATION THEORY & METHODOLOGY")
+    H("4.1 LAND")
+    P(
+        "Area Recorded in the land ownership Document or actual plot measurement whichever is smaller is considered "
+        "for valuation. Valuation of the land is done by current market costing method where land rates and instances "
+        "of sale from various agencies have been taken into account. Registration rates of land adopted by Nepal Government "
+        "Department of Revenue and instances of sale of land in that locality have been given due weightage. "
+        "To calculate the Weighted average rate, as per Cooperative Norms, we have taken the 30% of Rate adopted by "
+        "Government agencies and 70% of Market rate (unless otherwise specified for the institution)."
+    )
+    S(4)
+    H("4.2 BUILDING")
+    P(
+        "The replacement value of the building (if any) is derived from BUILT-UP AREA METHOD COSTING of structure. "
+        "Prevalent basic market rates are adopted for construction materials and labour."
+    )
+    story.append(PageBreak())
+
+    # ===== 7. Land Area Checking =====
+    H("7. Land Area Checking")
+    for p in plots:
+        P(f"<b>Plot No.(s) :</b> {p.get('plot_no')}")
+        rows = [
+            ["Description of Land", "Sq.M", "Kattha"],
+            ["Area of Land on Ownership document", f"{p.get('lalpurja_sqm')}", f"{round((p.get('lalpurja_sqm') or 0)/338.63, 3)}"],
+            ["Actual Area Verified on the site", f"{p.get('site_sqm')}", f"{round((p.get('site_sqm') or 0)/338.63, 3)}"],
+            ["Net Area Considered for valuation", f"{p.get('site_sqm')}", f"{round((p.get('site_sqm') or 0)/338.63, 3)}"],
+            ["Deduction For Road & ROW", f"{p.get('deducted_sqm')}", f"{round((p.get('deducted_sqm') or 0)/338.63, 3)}"],
+            ["Sub Total", f"{p.get('considered_sqm')}", f"{round((p.get('considered_sqm') or 0)/338.63, 3)}"],
+            ["Deduction for Land Development", f"{p.get('dev_deduction_sqm')}", f"{round((p.get('dev_deduction_sqm') or 0)/338.63, 3)}"],
+            ["Net Area After Deduction", f"{p.get('net_sqm')}", f"{p.get('net_kattha')}"],
+        ]
+        if p.get("use_belting"):
+            rows += [
+                ["Belt-1 Area (raw)", f"{p.get('belt1_raw')}", ""],
+                ["Belt-2 Area (raw)", f"{p.get('belt2_raw')}", ""],
+                ["Belt-3 Area (raw)", f"{p.get('belt3_raw')}", ""],
+                ["Belt-1 Net", f"{p.get('belt1_net')}", ""],
+                ["Belt-2 Net", f"{p.get('belt2_net')}", ""],
+                ["Belt-3 Net", f"{p.get('belt3_net')}", ""],
+            ]
+        t = Table(rows, colWidths=[90*mm, 40*mm, 40*mm])
+        t.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+        ]))
+        story.append(t)
+        S(6)
+
+    # ===== 8. Land Rate =====
+    H("8. Land Rate")
+    P("Note : To calculate the Weighted average rate, as per Cooperative Norms, we have taken the 30% of Rate adopted by Government agencies and 70% of Market rate.")
+    S(3)
+    rate_rows = [["Plot Nos.", "Market / unit", "Govt / unit", "Weightage rate (adopted)"]]
+    bank_info = data.get("bank") or {}
+    for p in plots:
+        if p.get("use_belting"):
+            rate_rows.append([
+                str(p.get("plot_no")),
+                f"Mkt {p.get('market_per_sqm')}/Sq.M",
+                f"Gov {p.get('govt_per_sqm')}/Sq.M",
+                f"B1 {p.get('rate1')} | B2 {p.get('rate2')} | B3 {p.get('rate3')} /Sq.M",
+            ])
+        else:
+            rate_rows.append([
+                str(p.get("plot_no")),
+                f"{p.get('market_per_sqm')} /Sq.M",
+                f"{p.get('govt_per_sqm')} /Sq.M",
+                f"{p.get('rate1')} /Sq.M",
+            ])
+    rt = Table(rate_rows, colWidths=[30*mm, 45*mm, 45*mm, 60*mm])
+    rt.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+    ]))
+    story.append(rt)
+    story.append(PageBreak())
+
+    # ===== 13/9 Valuation Table of Land =====
+    H("9. Valuation Table of Land")
+    for p in plots:
+        story.append(kv([
+            ["Owner of property", owner],
+            ["Address of the owner", mem_addr or owner_ch],
+            ["Location of property as per Title deeds", owner_deed],
+            ["Present Location Of the Property", owner_ch],
+            ["Plot No.(s)", str(p.get("plot_no") or "")],
+            ["Plot Area (net)", f"{p.get('net_sqm')} Sq.M. ({p.get('bkd')} B-K-D)"],
+        ], c1=70*mm, c2=110*mm))
+        S(3)
+        vrows = [
+            ["1.1 Description of Land", "Sq.M", "Kattha"],
+            ["1.2 Area on Ownership document", f"{p.get('lalpurja_sqm')}", f"{round((p.get('lalpurja_sqm') or 0)/338.63, 3)}"],
+            ["1.3 Actual Area Verified on site", f"{p.get('site_sqm')}", f"{round((p.get('site_sqm') or 0)/338.63, 3)}"],
+            ["1.4 Net Area Considered for valuation", f"{p.get('site_sqm')}", ""],
+            ["1.5 Deduction For Road & ROW", f"{p.get('deducted_sqm')}", ""],
+            ["Sub Total", f"{p.get('considered_sqm')}", ""],
+            ["1.6 Deduction for other occupied land", "0", "0"],
+            ["1.7 Deduction for Land Development", f"{p.get('dev_deduction_sqm')}", ""],
+            ["1.8 Net Area After Deduction", f"{p.get('net_sqm')}", f"{p.get('net_kattha')}"],
+        ]
+        if p.get("use_belting"):
+            vrows += [
+                ["Belt-1 Area / Rate / Value", f"{p.get('belt1_net')} Sq.M @ {p.get('rate1')}", fmt(p.get("fmv1") or 0)],
+                ["Belt-2 Area / Rate / Value", f"{p.get('belt2_net')} Sq.M @ {p.get('rate2')}", fmt(p.get("fmv2") or 0)],
+                ["Belt-3 Area / Rate / Value", f"{p.get('belt3_net')} Sq.M @ {p.get('rate3')}", fmt(p.get("fmv3") or 0)],
+            ]
+        else:
+            vrows.append(["Land Rate adoption (NRs per Sq.M)", f"{p.get('rate1')}", ""])
+        vrows += [
+            ["Total Value of the Land (NRs.)", fmt(p.get("raw_fmv") or p.get("fmv") or 0), ""],
+            ["Net Total Value of the Land (NRs.)", fmt(p.get("fmv") or 0), ""],
+            ["Distress Value of Land (NRs.)", fmt(p.get("distress") or 0), ""],
+        ]
+        vt = Table(vrows, colWidths=[90*mm, 50*mm, 40*mm])
+        vt.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
+        ]))
+        story.append(vt)
+        S(8)
+
+    if bldg_fmv:
+        H("Building Valuation (summary)")
+        story.append(kv([
+            ["Fair Market Value of Building", f"NRs. {fmt(bldg_fmv)}"],
+            ["Distress Value of Building", f"NRs. {fmt(bldg_dv)}"],
+        ], c1=70*mm, c2=110*mm))
+
+    story.append(PageBreak())
+
+    # ===== Site plan (reuse existing builder) =====
+    for flowable in build_location_plan_story(data, st):
+        story.append(flowable)
+
+    doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+    buf.seek(0)
+    return buf.read()
+

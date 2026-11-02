@@ -517,6 +517,9 @@ def ensure_banks_tables():
             ("Global IME Bank Limited", 0.60, 0.40, 0.80),
             ("NIC Asia Bank Limited", 0.70, 0.30, 0.75),
             ("Prabhu Bank Limited", 0.60, 0.40, 0.80),
+            # Sahakari / cooperatives (NMC format) — added alongside banks
+            ("Nepal Multipurpose Cooperative Society", 0.70, 0.30, 0.80),
+            ("Adhunik Saving and Credit Co-oprative Society Ltd", 0.70, 0.30, 0.80),
             ("Custom / Other", 0.70, 0.30, 0.80),
         ]
         for name, m, g, d in defaults:
@@ -625,5 +628,23 @@ def delete_branch(branch_id: int):
     ensure_banks_tables()
     conn = get_db()
     conn.execute("DELETE FROM branches WHERE id = ?", (branch_id,))
+    conn.commit()
+    conn.close()
+
+
+def ensure_cooperative_presets():
+    """Add Sahakari presets without removing existing banks."""
+    ensure_banks_tables()
+    conn = get_db()
+    extra = [
+        ("Nepal Multipurpose Cooperative Society", 0.70, 0.30, 0.80),
+        ("Adhunik Saving and Credit Co-oprative Society Ltd", 0.70, 0.30, 0.80),
+    ]
+    from datetime import datetime
+    for name, m, g, d in extra:
+        conn.execute(
+            "INSERT OR IGNORE INTO banks (name, mrv_pct, grv_pct, distress_factor, notes, created_at) VALUES (?,?,?,?,?,?)",
+            (name, m, g, d, "Sahakari NMC format", datetime.utcnow().isoformat() + "Z"),
+        )
     conn.commit()
     conn.close()
