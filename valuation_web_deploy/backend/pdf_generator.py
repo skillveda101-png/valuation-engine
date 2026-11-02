@@ -528,8 +528,8 @@ def _static_map_flowable(lat: float, lng: float, max_w_mm: float = 170, max_h_mm
 def make_site_plan_drawing(
     plot: Dict[str, Any],
     gps_text: str = "",
-    width: float = 500,
-    height: float = 520,
+    width: float = 480,
+    height: float = 380,
 ) -> Drawing:
     """
     Engineering-style SITE PLAN matching sample valuation drawings:
@@ -734,7 +734,7 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
             Paragraph(f"<b>GPS:</b> {gps_text or '—'}", header_small),
         ],
     ]
-    head = Table(head_data, colWidths=[60*mm, 70*mm, 50*mm])
+    head = Table(head_data, colWidths=[55*mm, 65*mm, 50*mm])
     head.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 1.2, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -747,43 +747,27 @@ def build_location_plan_story(data: Dict[str, Any], st) -> List:
     ]))
 
     # Drawing
-    drawing = make_site_plan_drawing(plot, gps_text=gps_text, width=500, height=500)
+    drawing = make_site_plan_drawing(plot, gps_text=gps_text, width=470, height=360)
 
     # Optional OSM map under schematic if GPS available (smaller)
-    map_block = []
-    coords = _parse_gps(gps_text)
-    if coords:
-        lat, lng = coords
-        map_img = _static_map_flowable(lat, lng, max_w_mm=170, max_h_mm=70)
-        if map_img:
-            map_block = [
-                Spacer(1, 4),
-                Paragraph(
-                    f"<b>Satellite / street context (OSM)</b> — pin at {lat:.6f}, {lng:.6f}",
-                    st["Small"],
-                ),
-                map_img,
-            ]
-
-    # Assemble with thick double border (outer thick + inner)
-    inner = [head, Spacer(1, 6), drawing] + map_block
+    # Keep site plan page lean so it always fits the frame (no extra map on this page)
+    inner = [head, Spacer(1, 4), drawing]
     inner_tbl = Table([[x] for x in inner], colWidths=[180*mm])
     inner_tbl.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 2.5, colors.black),  # strong inner box
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("BOX", (0, 0), (-1, -1), 2, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
 
-    # Outer frame ≈ inch-like heavy border using another box with larger stroke
-    outer = Table([[inner_tbl]], colWidths=[190*mm])
+    outer = Table([[inner_tbl]], colWidths=[182*mm])
     outer.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 4, colors.black),  # thick outer border
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 3.5, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
 
     out.append(outer)
